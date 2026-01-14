@@ -1,0 +1,96 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25-ea'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn clean package
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EasySigns
+          path: target/EasySigns-*.jar
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: EasySigns
+
+      - name: Generate version
+        id: version
+        run: echo "version=v1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+      - name: Rename JAR
+        run: mv EasySigns-*.jar EasySigns-${{ steps.version.outputs.version }}.jar
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: EasySigns ${{ steps.version.outputs.version }}
+          body: |
+            ## EasySigns ${{ steps.version.outputs.version }}
+
+            **Commit:** ${{ github.sha }}
+            **Released:** ${{ github.event.head_commit.timestamp }}
+
+            ---
+
+            ### How to Install
+
+            1. Download `EasySigns-${{ steps.version.outputs.version }}.jar` below
+            2. Drop it in your server's `mods` folder
+            3. Restart your server
+            4. Done! Players can now place and edit signs
+
+            ---
+
+            ### Features
+
+            - Place sign blocks to create floating text displays
+            - Right-click signs to edit them
+            - Use `/sign` command to manage signs
+            - Text persists across server restarts
+
+            ---
+
+            ### Usage
+
+            1. Place a sign block in the world
+            2. Type your text in chat (use `|` to separate lines)
+            3. Right-click existing signs to edit them
+            4. Type `cancel` to cancel editing
+
+          files: EasySigns-${{ steps.version.outputs.version }}.jar
+          draft: false
+          prerelease: false
+          make_latest: true

@@ -15,3 +15,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Keep HytaleServer.jar in lib
+lib/*
+!lib/HytaleServer.jar
