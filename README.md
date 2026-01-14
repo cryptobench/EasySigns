@@ -1,6 +1,10 @@
 # EasySigns
 
-Floating text displays for Hytale servers! Create hovering text anywhere in your world.
+> **Built for the European Hytale survival server at `play.hyfyve.net`**
+
+Floating text displays for Hytale servers!
+
+As of the first Hytale release, the game does not support writing text directly on sign blocks. This plugin provides a workaround by spawning invisible entities with nameplates, allowing you to place readable text anywhere in the world that other players can see.
 
 ---
 
@@ -9,7 +13,7 @@ Floating text displays for Hytale servers! Create hovering text anywhere in your
 1. Download the latest `EasySigns.jar` from [Releases](../../releases)
 2. Put it in your server's `mods` folder
 3. Restart your server
-4. Use `/sign Hello World!` to create your first sign
+4. Use `/sign Hello World!` to create your first floating text
 
 ---
 
@@ -30,23 +34,12 @@ Floating text displays for Hytale servers! Create hovering text anywhere in your
 
 ### Creating Signs
 
-Stand where you want the sign and type:
+Stand where you want the text and type:
 ```
 /sign Welcome to my base!
 ```
 
-For multiple lines, use `|` as a separator:
-```
-/sign Line 1|Line 2|Line 3|Line 4
-```
-
-### Editing Signs
-
-Right-click an existing sign to open the editor UI. You can also edit via chat:
-- Type each line and press enter
-- Type `skip` to leave a line blank
-- Type `done` to finish editing
-- Type `cancel` to cancel without saving
+Long text is automatically wrapped across multiple lines (max 32 characters per line, up to 4 lines).
 
 ### Removing Signs
 
@@ -61,6 +54,14 @@ Right-click an existing sign to open the editor UI. You can also edit via chat:
 /sign delete 3
 ```
 
+### Editing Signs
+
+To edit a sign, remove it and create a new one:
+```
+/sign remove
+/sign New text here
+```
+
 ---
 
 ## Permissions
@@ -72,9 +73,13 @@ Right-click an existing sign to open the editor UI. You can also edit via chat:
 
 ---
 
-## Data Storage
+## How It Works
 
-Sign data is saved in `mods/cryptobench_EasySigns/signs.json` and persists across server restarts.
+NSince Hytale doesn't have native sign text support, this plugin:
+1. Spawns invisible entities at your location
+2. Attaches nameplate components to display text
+3. Creates one entity per line, stacked vertically
+4. Persists sign data to `mods/cryptobench_EasySigns/signs.json`
 
 ---
 
