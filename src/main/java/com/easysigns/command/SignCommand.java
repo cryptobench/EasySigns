@@ -106,10 +106,11 @@ public class SignCommand extends AbstractPlayerCommand {
         // Create the sign data
         SignData signData = signStorage.createSign(worldName, blockPos);
 
-        // Parse text - split by | for multiple lines
-        String[] lines = text.split("\\|", SignData.MAX_LINES);
-        for (int i = 0; i < lines.length && i < SignData.MAX_LINES; i++) {
-            signData.setLine(i, lines[i].trim());
+        // Parse text - split by | for manual line breaks, then auto-wrap long lines
+        String[] manualLines = text.split("\\|");
+        String[] wrappedLines = wrapText(manualLines, SignData.MAX_LINE_LENGTH, SignData.MAX_LINES);
+        for (int i = 0; i < wrappedLines.length && i < SignData.MAX_LINES; i++) {
+            signData.setLine(i, wrappedLines[i].trim());
         }
 
         // Save the sign
@@ -260,5 +261,74 @@ public class SignCommand extends AbstractPlayerCommand {
 
     private String formatPos(Vector3i pos) {
         return "(" + pos.getX() + ", " + pos.getY() + ", " + pos.getZ() + ")";
+    }
+
+    /**
+     * Word-wrap text to fit within line length and line count limits.
+     */
+    private String[] wrapText(String[] inputLines, int maxLineLength, int maxLines) {
+        java.util.List<String> result = new java.util.ArrayList<>();
+
+        for (String line : inputLines) {
+            if (result.size() >= maxLines) break;
+
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) {
+                result.add("");
+                continue;
+            }
+
+            // If line fits, add it directly
+            if (trimmed.length() <= maxLineLength) {
+                result.add(trimmed);
+                continue;
+            }
+
+            // Word-wrap the line
+            String[] words = trimmed.split("\\s+");
+            StringBuilder current = new StringBuilder();
+
+            for (String word : words) {
+                if (result.size() >= maxLines) break;
+
+                // If word itself is too long, split it
+                if (word.length() > maxLineLength) {
+                    // Flush current line first
+                    if (current.length() > 0) {
+                        result.add(current.toString());
+                        current = new StringBuilder();
+                        if (result.size() >= maxLines) break;
+                    }
+                    // Split long word across lines
+                    while (word.length() > maxLineLength && result.size() < maxLines) {
+                        result.add(word.substring(0, maxLineLength));
+                        word = word.substring(maxLineLength);
+                    }
+                    if (word.length() > 0 && result.size() < maxLines) {
+                        current.append(word);
+                    }
+                    continue;
+                }
+
+                // Check if word fits on current line
+                if (current.length() == 0) {
+                    current.append(word);
+                } else if (current.length() + 1 + word.length() <= maxLineLength) {
+                    current.append(" ").append(word);
+                } else {
+                    // Start new line
+                    result.add(current.toString());
+                    current = new StringBuilder(word);
+                    if (result.size() >= maxLines) break;
+                }
+            }
+
+            // Add remaining text
+            if (current.length() > 0 && result.size() < maxLines) {
+                result.add(current.toString());
+            }
+        }
+
+        return result.toArray(new String[0]);
     }
 }
