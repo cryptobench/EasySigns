@@ -1,0 +1,9 @@
+{
+    "Group": "cryptobench",
+    "Name": "EasySigns",
+    "Version": "1.0.0",
+    "Main": "com.easysigns.EasySigns",
+    "Description": "Typeable signs for Hytale servers",
+    "Authors": [],
+    "Dependencies": {}
+}
