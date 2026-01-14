@@ -99,6 +99,27 @@ public class SignStorage {
     }
 
     /**
+     * Get all signs with their keys.
+     * Returns a copy of the internal map.
+     */
+    public Map<String, SignData> getAllSigns() {
+        return new ConcurrentHashMap<>(signs);
+    }
+
+    /**
+     * Parse a position key into components.
+     * Returns [worldName, x, y, z] or null if invalid.
+     */
+    public static String[] parseKey(String key) {
+        if (key == null) return null;
+        String[] parts = key.split(":");
+        if (parts.length == 4) {
+            return parts;
+        }
+        return null;
+    }
+
+    /**
      * Get all sign positions in a specific world.
      */
     public List<Vector3i> getSignsInWorld(String worldName) {
