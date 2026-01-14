@@ -74,21 +74,26 @@ jobs:
 
             ---
 
-            ### Features
+            ### Commands
 
-            - Place sign blocks to create floating text displays
-            - Right-click signs to edit them
-            - Use `/sign` command to manage signs
-            - Text persists across server restarts
+            | Command | What it does |
+            |---------|--------------|
+            | `/sign <text>` | Create floating text at your position |
+            | `/sign list` | List all signs with IDs |
+            | `/sign delete <id>` | Delete a sign by ID |
+            | `/sign remove` | Remove nearest sign (within 5 blocks) |
+            | `/sign status` | Show plugin status |
 
             ---
 
-            ### Usage
+            ### Quick Examples
 
-            1. Place a sign block in the world
-            2. Type your text in chat (use `|` to separate lines)
-            3. Right-click existing signs to edit them
-            4. Type `cancel` to cancel editing
+            ```
+            /sign Welcome to my server!
+            /sign Line 1|Line 2|Line 3
+            ```
+
+            Right-click existing signs to edit them.
 
           files: EasySigns-${{ steps.version.outputs.version }}.jar
           draft: false
