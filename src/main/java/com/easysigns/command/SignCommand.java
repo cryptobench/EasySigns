@@ -47,6 +47,7 @@ public class SignCommand extends AbstractPlayerCommand {
         this.plugin = plugin;
         this.signStorage = signStorage;
         setAllowsExtraArguments(true);
+        requirePermission("signs.use");
     }
 
     @Override

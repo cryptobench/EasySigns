@@ -83,6 +83,11 @@ public class SignPlaceSystem extends EntityEventSystem<EntityStore, PlaceBlockEv
             return;
         }
 
+        // Check permission
+        if (!player.hasPermission("signs.use")) {
+            return; // No permission to create signs
+        }
+
         World world = player.getWorld();
         if (world == null) return;
 

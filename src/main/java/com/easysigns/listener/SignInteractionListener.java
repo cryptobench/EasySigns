@@ -69,6 +69,11 @@ public class SignInteractionListener {
             return; // No sign here
         }
 
+        // Check permission
+        if (!player.hasPermission("signs.use")) {
+            return; // No permission to edit signs
+        }
+
         // Cancel the interaction to prevent other actions
         event.setCancelled(true);
 
