@@ -3,208 +3,155 @@ package com.easysigns.config;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
-import java.awt.Color;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.logging.Logger;
+import java.util.regex.Pattern;
 
 /**
- * Configuration for the EasySigns plugin.
- * Stored as JSON in the plugin's data directory.
+ * Configuration for EasySigns plugin.
+ * Handles banned words filtering and other settings.
  */
 public class SignConfig {
-
-    private static final Logger LOGGER = Logger.getLogger("EasySigns");
     private static final String CONFIG_FILE = "config.json";
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
-    // Configuration fields with defaults
+    // Config values
+    private boolean filterEnabled = true;
+    private List<String> bannedWords = new ArrayList<>();
+    private String filterMessage = "Your sign contains inappropriate content.";
+    private boolean notifyAdmins = true;
+
+    // Transient (not saved)
+    private transient Path dataDirectory;
+    private transient Logger logger;
+    private transient List<Pattern> bannedPatterns;
+
+    public SignConfig() {
+        // Default banned words (examples - replace with real ones)
+        bannedWords.add("example_bad_word");
+    }
 
     /**
-     * Maximum number of lines per sign.
+     * Initialize the config with data directory and logger.
      */
-    private int maxLines = 4;
+    public void init(Path dataDirectory, Logger logger) {
+        this.dataDirectory = dataDirectory;
+        this.logger = logger;
+        load();
+        compilePatterns();
+    }
 
     /**
-     * Maximum characters per line.
+     * Check if text contains banned words.
+     * Returns the matched word if found, null otherwise.
      */
-    private int maxLineLength = 32;
+    public String checkForBannedWords(String text) {
+        if (!filterEnabled || text == null || bannedPatterns == null) {
+            return null;
+        }
 
-    /**
-     * Default text color (RGB).
-     */
-    private int[] defaultTextColor = {0, 0, 0}; // Black
-
-    /**
-     * Whether signs glow by default.
-     */
-    private boolean defaultGlowing = false;
-
-    /**
-     * Whether to show text preview in the editor.
-     */
-    private boolean showPreview = true;
-
-    /**
-     * Vertical offset for text display above blocks (in blocks).
-     */
-    private double textDisplayOffsetY = 0.5;
-
-    /**
-     * Whether all players can create signs, or only admins.
-     */
-    private boolean allowPlayerSigns = true;
-
-    /**
-     * Whether to enable chat-based editing as fallback.
-     */
-    private boolean enableChatEditing = true;
-
-    /**
-     * Load configuration from file, or create default if not exists.
-     */
-    public static SignConfig load(Path dataDirectory) {
-        Path configPath = dataDirectory.resolve(CONFIG_FILE);
-
-        if (Files.exists(configPath)) {
-            try {
-                String json = Files.readString(configPath);
-                SignConfig config = GSON.fromJson(json, SignConfig.class);
-                LOGGER.info("Loaded configuration from " + configPath);
-                return config;
-            } catch (IOException e) {
-                LOGGER.warning("Failed to load config: " + e.getMessage());
+        String lowerText = text.toLowerCase();
+        for (int i = 0; i < bannedPatterns.size(); i++) {
+            if (bannedPatterns.get(i).matcher(lowerText).find()) {
+                return bannedWords.get(i);
             }
         }
-
-        // Create default config
-        SignConfig config = new SignConfig();
-        config.save(dataDirectory);
-        return config;
+        return null;
     }
 
     /**
-     * Save configuration to file.
+     * Check multiple lines for banned words.
+     * Returns the matched word if found, null otherwise.
      */
-    public void save(Path dataDirectory) {
-        try {
-            // Ensure directory exists
-            Files.createDirectories(dataDirectory);
+    public String checkLinesForBannedWords(String[] lines) {
+        if (lines == null) return null;
+        for (String line : lines) {
+            String match = checkForBannedWords(line);
+            if (match != null) {
+                return match;
+            }
+        }
+        return null;
+    }
 
-            Path configPath = dataDirectory.resolve(CONFIG_FILE);
-            String json = GSON.toJson(this);
-            Files.writeString(configPath, json);
+    /**
+     * Compile banned words into regex patterns for efficient matching.
+     */
+    private void compilePatterns() {
+        bannedPatterns = new ArrayList<>();
+        for (String word : bannedWords) {
+            // Match word boundaries, case insensitive
+            String pattern = "\\b" + Pattern.quote(word.toLowerCase()) + "\\b";
+            bannedPatterns.add(Pattern.compile(pattern, Pattern.CASE_INSENSITIVE));
+        }
+        logger.info("Compiled " + bannedPatterns.size() + " banned word patterns");
+    }
 
-            LOGGER.info("Saved configuration to " + configPath);
-
-        } catch (IOException e) {
-            LOGGER.warning("Failed to save config: " + e.getMessage());
+    /**
+     * Load config from file.
+     */
+    private void load() {
+        Path file = dataDirectory.resolve(CONFIG_FILE);
+        if (Files.exists(file)) {
+            try {
+                String json = Files.readString(file);
+                SignConfig loaded = GSON.fromJson(json, SignConfig.class);
+                if (loaded != null) {
+                    this.filterEnabled = loaded.filterEnabled;
+                    this.bannedWords = loaded.bannedWords != null ? loaded.bannedWords : new ArrayList<>();
+                    this.filterMessage = loaded.filterMessage;
+                    this.notifyAdmins = loaded.notifyAdmins;
+                }
+                logger.info("Loaded config with " + bannedWords.size() + " banned words");
+            } catch (IOException e) {
+                logger.warning("Failed to load config: " + e.getMessage());
+            }
+        } else {
+            // Save default config
+            save();
+            logger.info("Created default config file");
         }
     }
 
     /**
-     * Reload configuration from file.
+     * Save config to file.
      */
-    public void reload(Path dataDirectory) {
-        SignConfig reloaded = load(dataDirectory);
-
-        // Copy values from reloaded config
-        this.maxLines = reloaded.maxLines;
-        this.maxLineLength = reloaded.maxLineLength;
-        this.defaultTextColor = reloaded.defaultTextColor;
-        this.defaultGlowing = reloaded.defaultGlowing;
-        this.showPreview = reloaded.showPreview;
-        this.textDisplayOffsetY = reloaded.textDisplayOffsetY;
-        this.allowPlayerSigns = reloaded.allowPlayerSigns;
-        this.enableChatEditing = reloaded.enableChatEditing;
-
-        LOGGER.info("Configuration reloaded");
+    public void save() {
+        try {
+            Files.createDirectories(dataDirectory);
+            Path file = dataDirectory.resolve(CONFIG_FILE);
+            Files.writeString(file, GSON.toJson(this));
+        } catch (IOException e) {
+            logger.warning("Failed to save config: " + e.getMessage());
+        }
     }
 
-    // Getters and setters
-
-    public int getMaxLines() {
-        return maxLines;
+    /**
+     * Reload config from file.
+     */
+    public void reload() {
+        load();
+        compilePatterns();
     }
 
-    public void setMaxLines(int maxLines) {
-        this.maxLines = Math.max(1, Math.min(maxLines, 8));
+    // Getters
+    public boolean isFilterEnabled() {
+        return filterEnabled;
     }
 
-    public int getMaxLineLength() {
-        return maxLineLength;
+    public String getFilterMessage() {
+        return filterMessage;
     }
 
-    public void setMaxLineLength(int maxLineLength) {
-        this.maxLineLength = Math.max(1, Math.min(maxLineLength, 64));
+    public boolean shouldNotifyAdmins() {
+        return notifyAdmins;
     }
 
-    public Color getDefaultTextColor() {
-        return new Color(
-            defaultTextColor[0],
-            defaultTextColor[1],
-            defaultTextColor[2]
-        );
-    }
-
-    public void setDefaultTextColor(Color color) {
-        this.defaultTextColor = new int[]{
-            color.getRed(),
-            color.getGreen(),
-            color.getBlue()
-        };
-    }
-
-    public boolean isDefaultGlowing() {
-        return defaultGlowing;
-    }
-
-    public void setDefaultGlowing(boolean defaultGlowing) {
-        this.defaultGlowing = defaultGlowing;
-    }
-
-    public boolean isShowPreview() {
-        return showPreview;
-    }
-
-    public void setShowPreview(boolean showPreview) {
-        this.showPreview = showPreview;
-    }
-
-    public double getTextDisplayOffsetY() {
-        return textDisplayOffsetY;
-    }
-
-    public void setTextDisplayOffsetY(double textDisplayOffsetY) {
-        this.textDisplayOffsetY = textDisplayOffsetY;
-    }
-
-    public boolean isAllowPlayerSigns() {
-        return allowPlayerSigns;
-    }
-
-    public void setAllowPlayerSigns(boolean allowPlayerSigns) {
-        this.allowPlayerSigns = allowPlayerSigns;
-    }
-
-    public boolean isEnableChatEditing() {
-        return enableChatEditing;
-    }
-
-    public void setEnableChatEditing(boolean enableChatEditing) {
-        this.enableChatEditing = enableChatEditing;
-    }
-
-    @Override
-    public String toString() {
-        return "SignConfig{" +
-                "maxLines=" + maxLines +
-                ", maxLineLength=" + maxLineLength +
-                ", defaultGlowing=" + defaultGlowing +
-                ", showPreview=" + showPreview +
-                ", allowPlayerSigns=" + allowPlayerSigns +
-                ", enableChatEditing=" + enableChatEditing +
-                '}';
+    public List<String> getBannedWords() {
+        return new ArrayList<>(bannedWords);
     }
 }

@@ -19,14 +19,25 @@ As of the first Hytale release, the game does not support writing text directly 
 
 ## Commands
 
+### Player Commands
+
 | Command | What it does |
 |---------|--------------|
 | `/sign <text>` | Create floating text at your position |
-| `/sign list` | List all signs with IDs |
-| `/sign delete <id>` | Delete a sign by its ID |
-| `/sign remove` | Remove the nearest sign (within 5 blocks) |
+| `/sign list` | List your signs with their unique IDs |
+| `/sign delete <id>` | Delete your sign by its ID |
+| `/sign remove` | Remove the nearest sign you own (within 5 blocks) |
 | `/sign status` | Show plugin status |
 | `/sign help` | Show all commands |
+
+### Admin Commands (requires `signs.admin`)
+
+| Command | What it does |
+|---------|--------------|
+| `/sign listall` | List ALL signs from all players with owner info |
+| `/sign deleteany <id>` | Delete any sign by ID (bypass ownership) |
+| `/sign purge <player>` | Delete ALL signs from a specific player |
+| `/sign reload` | Reload config (banned words list) |
 
 ---
 
@@ -39,28 +50,33 @@ Stand where you want the text and type:
 /sign Welcome to my base!
 ```
 
+Use `|` to manually split lines:
+```
+/sign Line 1|Line 2|Line 3
+```
+
 Long text is automatically wrapped across multiple lines (max 32 characters per line, up to 4 lines).
 
 ### Removing Signs
 
-**By proximity:** Stand near a sign and use:
+**By proximity:** Stand near your sign and use:
 ```
 /sign remove
 ```
 
-**By ID:** List all signs, then delete by number:
+**By ID:** List your signs, then delete by ID:
 ```
 /sign list
-/sign delete 3
+/sign delete a1b2c3d4
 ```
 
-### Editing Signs
+> Note: Sign IDs are stable 8-character strings that don't change when other signs are deleted.
 
-To edit a sign, remove it and create a new one:
-```
-/sign remove
-/sign New text here
-```
+### Sign Ownership
+
+- Each sign tracks who created it
+- You can only edit/delete your own signs
+- Admins with `signs.admin` can manage anyone's signs
 
 ---
 
@@ -68,14 +84,42 @@ To edit a sign, remove it and create a new one:
 
 | Permission | What it does |
 |------------|--------------|
-| `signs.use` | Create, edit, and remove signs |
-| `signs.admin` | Admin access |
+| `signs.use` | Create, edit, and delete your own signs |
+| `signs.admin` | List/delete anyone's signs, purge players, reload config |
+
+Grant permissions via server console:
+```
+perm group add Adventure signs.use
+perm group add Moderator signs.admin
+```
+
+---
+
+## Configuration
+
+Config file: `mods/cryptobench_EasySigns/config.json`
+
+```json
+{
+  "filterEnabled": true,
+  "bannedWords": ["badword1", "badword2"],
+  "filterMessage": "Your sign contains inappropriate content.",
+  "notifyAdmins": true
+}
+```
+
+- **filterEnabled** - Enable/disable bad word filtering
+- **bannedWords** - List of words to block (case insensitive)
+- **filterMessage** - Message shown when sign is rejected
+- **notifyAdmins** - Log attempts to use banned words
+
+Use `/sign reload` to apply config changes without restart.
 
 ---
 
 ## How It Works
 
-NSince Hytale doesn't have native sign text support, this plugin:
+Since Hytale doesn't have native sign text support, this plugin:
 1. Spawns invisible entities at your location
 2. Attaches nameplate components to display text
 3. Creates one entity per line, stacked vertically

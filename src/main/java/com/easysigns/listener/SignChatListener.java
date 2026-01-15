@@ -78,6 +78,16 @@ public class SignChatListener {
             content = "";
         }
 
+        // Check for banned words
+        if (!content.isEmpty()) {
+            String bannedWord = plugin.getConfig().checkForBannedWords(content);
+            if (bannedWord != null) {
+                sender.sendMessage(Message.raw(plugin.getConfig().getFilterMessage()).color(new Color(255, 85, 85)));
+                logger.warning("Player " + sender.getUsername() + " tried to add banned word to sign: " + bannedWord);
+                return;
+            }
+        }
+
         // Add the line to the sign
         int lineNum = SignEditSession.getCurrentLineNumber(playerId);
         boolean hasMoreLines = SignEditSession.addLine(playerId, content);

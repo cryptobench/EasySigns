@@ -1,6 +1,7 @@
 package com.easysigns;
 
 import com.easysigns.command.SignCommand;
+import com.easysigns.config.SignConfig;
 import com.easysigns.data.SignData;
 import com.easysigns.data.SignStorage;
 import com.easysigns.listener.SignChatListener;
@@ -31,6 +32,7 @@ public class EasySigns extends JavaPlugin {
 
     private static EasySigns instance;
     private Logger logger;
+    private SignConfig config;
     private SignStorage signStorage;
     private SignDisplayManager displayManager;
     private SignInteractionListener interactionListener;
@@ -55,6 +57,10 @@ public class EasySigns extends JavaPlugin {
             SignDisplayEntity.CODEC
         );
         logger.info("Registered sign display entity type");
+
+        // Initialize config
+        this.config = new SignConfig();
+        config.init(getDataDirectory(), logger);
 
         // Initialize sign storage
         this.signStorage = new SignStorage(getDataDirectory(), logger);
@@ -207,5 +213,9 @@ public class EasySigns extends JavaPlugin {
 
     public Logger getPluginLogger() {
         return logger;
+    }
+
+    public SignConfig getConfig() {
+        return config;
     }
 }

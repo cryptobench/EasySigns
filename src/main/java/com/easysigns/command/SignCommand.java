@@ -89,6 +89,8 @@ public class SignCommand extends AbstractPlayerCommand {
             case "list" -> executeList(playerData, world);
             case "listall" -> executeListAll(playerData, player);
             case "deleteany" -> executeDeleteAny(playerData, player, world, rest);
+            case "purge" -> executePurge(playerData, player, world, rest);
+            case "reload" -> executeReload(playerData, player);
             case "status" -> executeStatus(playerData);
             case "help" -> executeHelp(playerData);
             default -> {
@@ -117,12 +119,20 @@ public class SignCommand extends AbstractPlayerCommand {
             return;
         }
 
+        // Check for banned words
+        String[] manualLines = text.split("\\|");
+        String bannedWord = plugin.getConfig().checkLinesForBannedWords(manualLines);
+        if (bannedWord != null) {
+            playerData.sendMessage(Message.raw(plugin.getConfig().getFilterMessage()).color(RED));
+            plugin.getPluginLogger().warning("Player " + playerData.getUsername() + " tried to create sign with banned word: " + bannedWord);
+            return;
+        }
+
         // Create the sign data with owner
         SignData signData = signStorage.createSign(worldName, blockPos);
         signData.setOwner(playerData.getUuid(), playerData.getUsername());
 
         // Parse text - split by | for manual line breaks, then auto-wrap long lines
-        String[] manualLines = text.split("\\|");
         String[] wrappedLines = wrapText(manualLines, SignData.MAX_LINE_LENGTH, SignData.MAX_LINES);
         for (int i = 0; i < wrappedLines.length && i < SignData.MAX_LINES; i++) {
             signData.setLine(i, wrappedLines[i].trim());
@@ -368,6 +378,74 @@ public class SignCommand extends AbstractPlayerCommand {
         playerData.sendMessage(Message.raw("Sign [" + idStr + "] owned by " + ownerName + " at " + formatPos(pos) + " deleted.").color(GREEN));
     }
 
+    /**
+     * Admin command: Purge all signs from a specific player.
+     */
+    private void executePurge(PlayerRef playerData, Player player, World world, String playerName) {
+        // Check admin permission
+        if (player == null || !player.hasPermission("signs.admin")) {
+            playerData.sendMessage(Message.raw("You need signs.admin permission.").color(RED));
+            return;
+        }
+
+        if (playerName.isEmpty()) {
+            playerData.sendMessage(Message.raw("Usage: /sign purge <playername>").color(YELLOW));
+            playerData.sendMessage(Message.raw("Deletes ALL signs owned by that player.").color(GRAY));
+            return;
+        }
+
+        Map<String, SignData> allSigns = signStorage.getAllSigns();
+        int purgedCount = 0;
+
+        for (Map.Entry<String, SignData> entry : allSigns.entrySet()) {
+            SignData data = entry.getValue();
+            String ownerName = data.getOwnerName();
+
+            // Match by owner name (case insensitive)
+            if (ownerName != null && ownerName.equalsIgnoreCase(playerName)) {
+                String[] parts = SignStorage.parseKey(entry.getKey());
+                if (parts != null) {
+                    String worldName = parts[0];
+                    Vector3i pos = new Vector3i(
+                        Integer.parseInt(parts[1]),
+                        Integer.parseInt(parts[2]),
+                        Integer.parseInt(parts[3])
+                    );
+
+                    // Remove display if in same world
+                    if (world.getName().equals(worldName)) {
+                        plugin.getDisplayManager().removeDisplay(world, pos);
+                    }
+                }
+
+                // Remove from storage
+                signStorage.removeSignById(data.getSignId());
+                purgedCount++;
+            }
+        }
+
+        if (purgedCount > 0) {
+            playerData.sendMessage(Message.raw("Purged " + purgedCount + " signs from " + playerName + ".").color(GREEN));
+            plugin.getPluginLogger().warning("Admin " + playerData.getUsername() + " purged " + purgedCount + " signs from " + playerName);
+        } else {
+            playerData.sendMessage(Message.raw("No signs found from player: " + playerName).color(YELLOW));
+        }
+    }
+
+    /**
+     * Admin command: Reload config (banned words list).
+     */
+    private void executeReload(PlayerRef playerData, Player player) {
+        // Check admin permission
+        if (player == null || !player.hasPermission("signs.admin")) {
+            playerData.sendMessage(Message.raw("You need signs.admin permission.").color(RED));
+            return;
+        }
+
+        plugin.getConfig().reload();
+        playerData.sendMessage(Message.raw("Config reloaded! Banned words: " + plugin.getConfig().getBannedWords().size()).color(GREEN));
+    }
+
     private String getPreview(SignData data) {
         if (data == null) return "(empty)";
         StringBuilder sb = new StringBuilder();
@@ -402,6 +480,8 @@ public class SignCommand extends AbstractPlayerCommand {
         playerData.sendMessage(Message.raw("--- Admin Commands (signs.admin) ---").color(GOLD));
         playerData.sendMessage(Message.raw("/sign listall - List ALL signs from all players").color(YELLOW));
         playerData.sendMessage(Message.raw("/sign deleteany <id> - Delete any sign by ID").color(YELLOW));
+        playerData.sendMessage(Message.raw("/sign purge <player> - Delete ALL signs from a player").color(YELLOW));
+        playerData.sendMessage(Message.raw("/sign reload - Reload config (banned words)").color(YELLOW));
     }
 
     private String formatPos(Vector3i pos) {
