@@ -120,6 +120,36 @@ public class SignStorage {
     }
 
     /**
+     * Find a sign by its unique ID.
+     * Returns the position key and SignData, or null if not found.
+     */
+    public Map.Entry<String, SignData> getSignById(String signId) {
+        if (signId == null || signId.isEmpty()) return null;
+
+        for (Map.Entry<String, SignData> entry : signs.entrySet()) {
+            if (signId.equals(entry.getValue().getSignId())) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Remove a sign by its unique ID.
+     * Returns the position key if removed, null otherwise.
+     */
+    public String removeSignById(String signId) {
+        Map.Entry<String, SignData> entry = getSignById(signId);
+        if (entry != null) {
+            signs.remove(entry.getKey());
+            save();
+            logger.info("Removed sign with ID " + signId + " at " + entry.getKey());
+            return entry.getKey();
+        }
+        return null;
+    }
+
+    /**
      * Get all sign positions in a specific world.
      */
     public List<Vector3i> getSignsInWorld(String worldName) {

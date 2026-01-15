@@ -74,6 +74,12 @@ public class SignInteractionListener {
             return; // No permission to edit signs
         }
 
+        // Check ownership (unless admin)
+        boolean isAdmin = player.hasPermission("signs.admin");
+        if (!isAdmin && !signData.isOwner(player.getUuid())) {
+            return; // Not owner, can't edit
+        }
+
         // Cancel the interaction to prevent other actions
         event.setCancelled(true);
 

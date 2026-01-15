@@ -2,9 +2,10 @@ package com.easysigns.data;
 
 import java.awt.Color;
 import java.util.Arrays;
+import java.util.UUID;
 
 /**
- * Data for a single sign - text lines and color.
+ * Data for a single sign - text lines, color, and ownership.
  */
 public class SignData {
     public static final int MAX_LINES = 4;
@@ -15,11 +16,19 @@ public class SignData {
     private int colorG;
     private int colorB;
 
+    // Ownership and identification
+    private String signId;      // Unique stable ID for this sign
+    private String ownerUuid;   // UUID of the player who created the sign
+    private String ownerName;   // Username of the owner (for display)
+
     public SignData() {
         this.lines = new String[]{"", "", "", ""};
         this.colorR = 0;
         this.colorG = 0;
         this.colorB = 0;
+        this.signId = UUID.randomUUID().toString().substring(0, 8); // Short unique ID
+        this.ownerUuid = null;
+        this.ownerName = null;
     }
 
     public String[] getLines() {
@@ -74,5 +83,40 @@ public class SignData {
             if (line != null && !line.isEmpty()) return true;
         }
         return false;
+    }
+
+    // Ownership and ID methods
+    public String getSignId() {
+        // Generate ID if missing (for backwards compatibility with old signs)
+        if (signId == null || signId.isEmpty()) {
+            signId = UUID.randomUUID().toString().substring(0, 8);
+        }
+        return signId;
+    }
+
+    public String getOwnerUuid() {
+        return ownerUuid;
+    }
+
+    public void setOwnerUuid(String ownerUuid) {
+        this.ownerUuid = ownerUuid;
+    }
+
+    public String getOwnerName() {
+        return ownerName;
+    }
+
+    public void setOwnerName(String ownerName) {
+        this.ownerName = ownerName;
+    }
+
+    public void setOwner(UUID uuid, String name) {
+        this.ownerUuid = uuid != null ? uuid.toString() : null;
+        this.ownerName = name;
+    }
+
+    public boolean isOwner(UUID playerUuid) {
+        if (ownerUuid == null || playerUuid == null) return false;
+        return ownerUuid.equals(playerUuid.toString());
     }
 }

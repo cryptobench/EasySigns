@@ -95,8 +95,10 @@ public class SignPlaceSystem extends EntityEventSystem<EntityStore, PlaceBlockEv
 
         logger.info("Sign placed at " + targetBlock + " in " + worldName + " by " + playerRef.getUsername());
 
-        // Create sign data for this position
+        // Create sign data for this position with owner
         SignData signData = signStorage.createSign(worldName, targetBlock);
+        signData.setOwner(playerRef.getUuid(), playerRef.getUsername());
+        signStorage.updateSign(worldName, targetBlock, signData);
 
         // Open the sign editor UI
         try {

@@ -19,15 +19,23 @@ import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
 import javax.annotation.Nonnull;
 import java.awt.Color;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * Command for placing and managing floating text signs.
  *
  * Usage:
  *   /sign <text>           - Create floating text at your position (use | for multiple lines)
- *   /sign remove           - Remove the nearest sign within 5 blocks
+ *   /sign list             - List your signs with IDs
+ *   /sign delete <id>      - Delete your sign by ID
+ *   /sign remove           - Remove the nearest sign within 5 blocks (owner only)
  *   /sign status           - Show plugin status
  *   /sign help             - Show help
+ *
+ * Admin commands (requires signs.admin):
+ *   /sign listall          - List ALL signs from all players
+ *   /sign deleteany <id>   - Delete any sign by ID (bypass ownership)
  */
 public class SignCommand extends AbstractPlayerCommand {
 
@@ -72,10 +80,15 @@ public class SignCommand extends AbstractPlayerCommand {
             ? afterCommand.substring(firstWord.length()).trim()
             : "";
 
+        // Get player for permission checks
+        Player player = store.getComponent(playerRef, Player.getComponentType());
+
         switch (firstWord) {
             case "remove" -> executeRemove(playerData, playerRef, store, world);
             case "delete" -> executeDelete(playerData, world, rest);
             case "list" -> executeList(playerData, world);
+            case "listall" -> executeListAll(playerData, player);
+            case "deleteany" -> executeDeleteAny(playerData, player, world, rest);
             case "status" -> executeStatus(playerData);
             case "help" -> executeHelp(playerData);
             default -> {
@@ -104,8 +117,9 @@ public class SignCommand extends AbstractPlayerCommand {
             return;
         }
 
-        // Create the sign data
+        // Create the sign data with owner
         SignData signData = signStorage.createSign(worldName, blockPos);
+        signData.setOwner(playerData.getUuid(), playerData.getUsername());
 
         // Parse text - split by | for manual line breaks, then auto-wrap long lines
         String[] manualLines = text.split("\\|");
@@ -143,9 +157,12 @@ public class SignCommand extends AbstractPlayerCommand {
 
         Vector3d playerPos = transform.getPosition();
         String worldName = world.getName();
+        Player player = store.getComponent(playerRef, Player.getComponentType());
+        boolean isAdmin = player != null && player.hasPermission("signs.admin");
 
         // Find the nearest sign within radius
         Vector3i nearestSign = null;
+        SignData nearestSignData = null;
         double nearestDistSq = Double.MAX_VALUE;
 
         for (Vector3i signPos : signStorage.getSignsInWorld(worldName)) {
@@ -156,11 +173,19 @@ public class SignCommand extends AbstractPlayerCommand {
             if (distSq < nearestDistSq && distSq <= REMOVE_RADIUS * REMOVE_RADIUS) {
                 nearestDistSq = distSq;
                 nearestSign = signPos;
+                nearestSignData = signStorage.getSign(worldName, signPos);
             }
         }
 
         if (nearestSign == null) {
             playerData.sendMessage(Message.raw("No sign found within " + (int) REMOVE_RADIUS + " blocks.").color(YELLOW));
+            return;
+        }
+
+        // Check ownership (unless admin)
+        if (!isAdmin && nearestSignData != null && !nearestSignData.isOwner(playerData.getUuid())) {
+            String ownerName = nearestSignData.getOwnerName();
+            playerData.sendMessage(Message.raw("This sign belongs to " + (ownerName != null ? ownerName : "someone else") + ".").color(RED));
             return;
         }
 
@@ -176,19 +201,31 @@ public class SignCommand extends AbstractPlayerCommand {
     private void executeList(PlayerRef playerData, World world) {
         String worldName = world.getName();
         List<Vector3i> signs = signStorage.getSignsInWorld(worldName);
+        UUID playerUuid = playerData.getUuid();
 
-        if (signs.isEmpty()) {
-            playerData.sendMessage(Message.raw("No signs in this world.").color(YELLOW));
+        int count = 0;
+        StringBuilder output = new StringBuilder();
+
+        for (Vector3i pos : signs) {
+            SignData data = signStorage.getSign(worldName, pos);
+            if (data != null && data.isOwner(playerUuid)) {
+                String preview = getPreview(data);
+                output.append("[").append(data.getSignId()).append("] ")
+                      .append(formatPos(pos)).append(" - ").append(preview).append("\n");
+                count++;
+            }
+        }
+
+        if (count == 0) {
+            playerData.sendMessage(Message.raw("You have no signs in this world.").color(YELLOW));
             return;
         }
 
-        playerData.sendMessage(Message.raw("=== Signs in " + worldName + " ===").color(GOLD));
-        int id = 1;
-        for (Vector3i pos : signs) {
-            SignData data = signStorage.getSign(worldName, pos);
-            String preview = getPreview(data);
-            playerData.sendMessage(Message.raw("[" + id + "] " + formatPos(pos) + " - " + preview).color(GRAY));
-            id++;
+        playerData.sendMessage(Message.raw("=== Your Signs (" + count + ") ===").color(GOLD));
+        for (String line : output.toString().split("\n")) {
+            if (!line.isEmpty()) {
+                playerData.sendMessage(Message.raw(line).color(GRAY));
+            }
         }
         playerData.sendMessage(Message.raw("Use /sign delete <id> to remove a sign.").color(YELLOW));
     }
@@ -200,31 +237,135 @@ public class SignCommand extends AbstractPlayerCommand {
             return;
         }
 
-        int id;
-        try {
-            id = Integer.parseInt(idStr);
-        } catch (NumberFormatException e) {
-            playerData.sendMessage(Message.raw("Invalid ID. Use a number from /sign list.").color(RED));
+        // Find sign by ID
+        Map.Entry<String, SignData> entry = signStorage.getSignById(idStr);
+        if (entry == null) {
+            playerData.sendMessage(Message.raw("Sign with ID '" + idStr + "' not found.").color(RED));
+            playerData.sendMessage(Message.raw("Use /sign list to see your sign IDs.").color(GRAY));
             return;
         }
 
-        String worldName = world.getName();
-        List<Vector3i> signs = signStorage.getSignsInWorld(worldName);
+        SignData signData = entry.getValue();
 
-        if (id < 1 || id > signs.size()) {
-            playerData.sendMessage(Message.raw("Invalid ID. Use /sign list to see valid IDs.").color(RED));
+        // Check ownership
+        if (!signData.isOwner(playerData.getUuid())) {
+            playerData.sendMessage(Message.raw("This sign belongs to " +
+                (signData.getOwnerName() != null ? signData.getOwnerName() : "someone else") + ".").color(RED));
             return;
         }
 
-        Vector3i pos = signs.get(id - 1);
+        // Parse position from key
+        String[] parts = SignStorage.parseKey(entry.getKey());
+        if (parts == null) {
+            playerData.sendMessage(Message.raw("Error parsing sign position.").color(RED));
+            return;
+        }
+
+        String worldName = parts[0];
+        Vector3i pos = new Vector3i(
+            Integer.parseInt(parts[1]),
+            Integer.parseInt(parts[2]),
+            Integer.parseInt(parts[3])
+        );
 
         // Remove the display entity
-        plugin.getDisplayManager().removeDisplay(world, pos);
+        World signWorld = world.getName().equals(worldName) ? world : null;
+        if (signWorld != null) {
+            plugin.getDisplayManager().removeDisplay(signWorld, pos);
+        }
 
         // Remove from storage
-        signStorage.removeSign(worldName, pos);
+        signStorage.removeSignById(idStr);
 
-        playerData.sendMessage(Message.raw("Sign #" + id + " at " + formatPos(pos) + " deleted.").color(GREEN));
+        playerData.sendMessage(Message.raw("Sign [" + idStr + "] at " + formatPos(pos) + " deleted.").color(GREEN));
+    }
+
+    /**
+     * Admin command: List ALL signs from all players.
+     */
+    private void executeListAll(PlayerRef playerData, Player player) {
+        // Check admin permission
+        if (player == null || !player.hasPermission("signs.admin")) {
+            playerData.sendMessage(Message.raw("You need signs.admin permission.").color(RED));
+            return;
+        }
+
+        Map<String, SignData> allSigns = signStorage.getAllSigns();
+
+        if (allSigns.isEmpty()) {
+            playerData.sendMessage(Message.raw("No signs exist on the server.").color(YELLOW));
+            return;
+        }
+
+        playerData.sendMessage(Message.raw("=== All Signs (" + allSigns.size() + ") ===").color(GOLD));
+
+        for (Map.Entry<String, SignData> entry : allSigns.entrySet()) {
+            SignData data = entry.getValue();
+            String[] parts = SignStorage.parseKey(entry.getKey());
+            String posStr = parts != null ?
+                "(" + parts[1] + "," + parts[2] + "," + parts[3] + ") in " + parts[0] :
+                entry.getKey();
+
+            String ownerName = data.getOwnerName() != null ? data.getOwnerName() : "Unknown";
+            String preview = getPreview(data);
+
+            playerData.sendMessage(Message.raw("[" + data.getSignId() + "] " + posStr).color(GRAY));
+            playerData.sendMessage(Message.raw("  Owner: " + ownerName + " | Text: " + preview).color(GRAY));
+        }
+
+        playerData.sendMessage(Message.raw("Use /sign deleteany <id> to remove any sign.").color(YELLOW));
+    }
+
+    /**
+     * Admin command: Delete any sign by ID (bypass ownership).
+     */
+    private void executeDeleteAny(PlayerRef playerData, Player player, World world, String idStr) {
+        // Check admin permission
+        if (player == null || !player.hasPermission("signs.admin")) {
+            playerData.sendMessage(Message.raw("You need signs.admin permission.").color(RED));
+            return;
+        }
+
+        if (idStr.isEmpty()) {
+            playerData.sendMessage(Message.raw("Usage: /sign deleteany <id>").color(YELLOW));
+            playerData.sendMessage(Message.raw("Use /sign listall to see all sign IDs.").color(GRAY));
+            return;
+        }
+
+        // Find sign by ID
+        Map.Entry<String, SignData> entry = signStorage.getSignById(idStr);
+        if (entry == null) {
+            playerData.sendMessage(Message.raw("Sign with ID '" + idStr + "' not found.").color(RED));
+            return;
+        }
+
+        SignData signData = entry.getValue();
+        String ownerName = signData.getOwnerName() != null ? signData.getOwnerName() : "Unknown";
+
+        // Parse position from key
+        String[] parts = SignStorage.parseKey(entry.getKey());
+        if (parts == null) {
+            playerData.sendMessage(Message.raw("Error parsing sign position.").color(RED));
+            return;
+        }
+
+        String worldName = parts[0];
+        Vector3i pos = new Vector3i(
+            Integer.parseInt(parts[1]),
+            Integer.parseInt(parts[2]),
+            Integer.parseInt(parts[3])
+        );
+
+        // Remove the display entity
+        World signWorld = world.getName().equals(worldName) ? world : null;
+        if (signWorld != null) {
+            plugin.getDisplayManager().removeDisplay(signWorld, pos);
+        }
+
+        // Remove from storage
+        signStorage.removeSignById(idStr);
+
+        playerData.sendMessage(Message.raw("Sign [" + idStr + "] owned by " + ownerName + " at " + formatPos(pos) + " deleted.").color(GREEN));
     }
 
     private String getPreview(SignData data) {
@@ -254,10 +395,13 @@ public class SignCommand extends AbstractPlayerCommand {
         playerData.sendMessage(Message.raw("=== Sign Commands ===").color(GOLD));
         playerData.sendMessage(Message.raw("/sign <text> - Create floating text at your position").color(YELLOW));
         playerData.sendMessage(Message.raw("  Use | to separate lines: /sign Line1|Line2|Line3").color(GRAY));
-        playerData.sendMessage(Message.raw("/sign list - List all signs with IDs").color(YELLOW));
-        playerData.sendMessage(Message.raw("/sign delete <id> - Delete a sign by ID").color(YELLOW));
-        playerData.sendMessage(Message.raw("/sign remove - Remove the nearest sign (within 5 blocks)").color(YELLOW));
+        playerData.sendMessage(Message.raw("/sign list - List your signs with IDs").color(YELLOW));
+        playerData.sendMessage(Message.raw("/sign delete <id> - Delete your sign by ID").color(YELLOW));
+        playerData.sendMessage(Message.raw("/sign remove - Remove the nearest sign (owner only)").color(YELLOW));
         playerData.sendMessage(Message.raw("/sign status - Show plugin status").color(YELLOW));
+        playerData.sendMessage(Message.raw("--- Admin Commands (signs.admin) ---").color(GOLD));
+        playerData.sendMessage(Message.raw("/sign listall - List ALL signs from all players").color(YELLOW));
+        playerData.sendMessage(Message.raw("/sign deleteany <id> - Delete any sign by ID").color(YELLOW));
     }
 
     private String formatPos(Vector3i pos) {
