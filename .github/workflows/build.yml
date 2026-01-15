@@ -57,43 +57,27 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: EasySigns ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          append_body: true
           body: |
-            ## EasySigns ${{ steps.version.outputs.version }}
-
-            **Commit:** ${{ github.sha }}
-            **Released:** ${{ github.event.head_commit.timestamp }}
 
             ---
 
-            ### How to Install
+            ## Installation
 
             1. Download `EasySigns-${{ steps.version.outputs.version }}.jar` below
             2. Drop it in your server's `mods` folder
             3. Restart your server
-            4. Done! Players can now place and edit signs
 
-            ---
-
-            ### Commands
-
-            | Command | What it does |
-            |---------|--------------|
-            | `/sign <text>` | Create floating text at your position |
-            | `/sign list` | List all signs with IDs |
-            | `/sign delete <id>` | Delete a sign by ID |
-            | `/sign remove` | Remove nearest sign (within 5 blocks) |
-            | `/sign status` | Show plugin status |
-
-            ---
-
-            ### Quick Examples
+            ## Quick Start
 
             ```
-            /sign Welcome to my server!
-            /sign Line 1|Line 2|Line 3
+            /sign Hello World!
+            /sign list
+            /sign edit <id> New text here
             ```
 
-            Right-click existing signs to edit them.
+            See [README](../../blob/master/README.md) for full documentation.
 
           files: EasySigns-${{ steps.version.outputs.version }}.jar
           draft: false

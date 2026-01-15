@@ -25,6 +25,7 @@ As of the first Hytale release, the game does not support writing text directly 
 |---------|--------------|
 | `/sign <text>` | Create floating text at your position |
 | `/sign list` | List your signs with their unique IDs |
+| `/sign edit <id> <text>` | Edit a sign's text (keeps same location) |
 | `/sign delete <id>` | Delete your sign by its ID |
 | `/sign remove` | Remove the nearest sign you own (within 5 blocks) |
 | `/sign status` | Show plugin status |
@@ -56,6 +57,16 @@ Use `|` to manually split lines:
 ```
 
 Long text is automatically wrapped across multiple lines (max 32 characters per line, up to 4 lines).
+
+### Editing Signs
+
+List your signs to get the ID, then edit:
+```
+/sign list
+/sign edit a1b2c3d4 New text here
+```
+
+The sign stays at the same location - only the text is replaced.
 
 ### Removing Signs
 

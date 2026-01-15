@@ -336,6 +336,26 @@ mvn clean package
 # Copy target/PluginName-1.0.0.jar to Server/mods/
 ```
 
+## CI/CD & Release Notes
+
+Releases are automated via GitHub Actions. **Commit messages become release notes automatically.**
+
+### Commit Message Guidelines
+Write commit messages that make sense in a changelog:
+```
+Add /sign edit command to modify existing signs
+Fix sign displays not rendering after chunk unload
+Update banned words filter to catch obfuscations
+```
+
+**Good:** Action-oriented, describes what changed for users
+**Bad:** "fix bug", "wip", "update code"
+
+When pushing to `master`, CI will:
+1. Build the plugin
+2. Create a GitHub release with auto-generated notes from commits
+3. Attach the JAR file
+
 ## Key Imports
 ```java
 // Plugin
