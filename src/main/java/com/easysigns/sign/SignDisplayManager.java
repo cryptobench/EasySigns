@@ -26,6 +26,10 @@ import java.util.logging.Logger;
  * Uses invisible marker entities with Nameplate components to show
  * floating text above sign blocks. Each line is a separate entity
  * stacked vertically.
+ *
+ * Performance optimizations:
+ * - In-place text updates when line count doesn't change
+ * - Tracks display state to prevent duplicate spawns
  */
 public class SignDisplayManager {
 
@@ -36,6 +40,9 @@ public class SignDisplayManager {
     // Key format: "world:x:y:z"
     private final Map<String, List<Ref<EntityStore>>> displayEntities;
 
+    // Tracks the current text for each display (for detecting what changed)
+    private final Map<String, List<String>> displayText;
+
     // Spacing between lines
     private static final double LINE_HEIGHT = 0.25;
     // Base Y offset from block position
@@ -45,11 +52,13 @@ public class SignDisplayManager {
         this.plugin = plugin;
         this.logger = plugin.getPluginLogger();
         this.displayEntities = new ConcurrentHashMap<>();
+        this.displayText = new ConcurrentHashMap<>();
     }
 
     /**
      * Create display entities for a sign at the given position.
      * Creates one entity per line, stacked vertically.
+     * If display already exists with same structure, skips recreation.
      */
     public void createDisplay(World world, Vector3i position, String[] lines) {
         if (world == null || position == null || lines == null) {
@@ -57,9 +66,6 @@ public class SignDisplayManager {
         }
 
         String posKey = getPositionKey(world, position);
-
-        // Remove existing display if present
-        removeDisplay(world, position);
 
         // Collect non-empty lines
         List<String> textLines = new ArrayList<>();
@@ -70,11 +76,46 @@ public class SignDisplayManager {
         }
 
         if (textLines.isEmpty()) {
-            logger.info("No text for sign at " + position + ", skipping display");
+            // No text - remove display if exists
+            removeDisplay(world, position);
+            logger.fine("No text for sign at " + position + ", display removed/skipped");
             return;
         }
 
-        logger.info("Creating display for sign at " + position + " with " + textLines.size() + " lines");
+        // Check if we already have a display with the same text
+        List<String> existingText = displayText.get(posKey);
+        List<Ref<EntityStore>> existingRefs = displayEntities.get(posKey);
+
+        if (existingText != null && existingText.equals(textLines) && existingRefs != null && !existingRefs.isEmpty()) {
+            // Verify entities still exist by checking if we can access them
+            try {
+                Store<EntityStore> store = world.getEntityStore().getStore();
+                boolean allValid = true;
+                for (Ref<EntityStore> ref : existingRefs) {
+                    if (ref == null || store.getComponent(ref, Nameplate.getComponentType()) == null) {
+                        allValid = false;
+                        break;
+                    }
+                }
+                if (allValid) {
+                    logger.fine("Display at " + position + " still valid, skipping");
+                    return;
+                }
+                // Entities are gone - fall through to recreate
+                logger.fine("Display at " + position + " entities invalidated, recreating");
+            } catch (Exception e) {
+                // Can't verify - assume invalid and recreate
+                logger.fine("Display at " + position + " validation failed, recreating");
+            }
+        }
+
+        // Remove existing display if present
+        removeDisplay(world, position);
+
+        logger.fine("Creating display for sign at " + position + " with " + textLines.size() + " lines");
+
+        // Store the text we're creating
+        displayText.put(posKey, new ArrayList<>(textLines));
 
         world.execute(() -> {
             try {
@@ -133,7 +174,7 @@ public class SignDisplayManager {
                 // Track all entities for this sign
                 if (!entityRefs.isEmpty()) {
                     displayEntities.put(posKey, entityRefs);
-                    logger.info("SUCCESS: Created " + entityRefs.size() + " display entities at " + position);
+                    logger.fine("Created " + entityRefs.size() + " display entities at " + position);
                 }
 
             } catch (Exception e) {
@@ -145,10 +186,66 @@ public class SignDisplayManager {
 
     /**
      * Update the display for an existing sign.
+     * Attempts in-place update if line count matches, otherwise recreates.
      */
     public void updateDisplay(World world, Vector3i position, String[] lines) {
-        // Just recreate the display - simpler than trying to update individual lines
-        createDisplay(world, position, lines);
+        if (world == null || position == null || lines == null) {
+            return;
+        }
+
+        String posKey = getPositionKey(world, position);
+
+        // Collect non-empty lines
+        List<String> textLines = new ArrayList<>();
+        for (String line : lines) {
+            if (line != null && !line.isEmpty()) {
+                textLines.add(line);
+            }
+        }
+
+        // Check if text is identical (skip update entirely)
+        List<String> existingText = displayText.get(posKey);
+        if (existingText != null && existingText.equals(textLines)) {
+            logger.fine("Display at " + position + " unchanged, skipping update");
+            return;
+        }
+
+        // Get existing entities
+        List<Ref<EntityStore>> existingRefs = displayEntities.get(posKey);
+
+        // If line count matches and we have existing entities, try in-place update
+        if (existingRefs != null && existingRefs.size() == textLines.size() && !textLines.isEmpty()) {
+            logger.fine("In-place update for sign at " + position + " (" + textLines.size() + " lines)");
+
+            // Update text tracking
+            displayText.put(posKey, new ArrayList<>(textLines));
+
+            world.execute(() -> {
+                try {
+                    Store<EntityStore> store = world.getEntityStore().getStore();
+
+                    for (int i = 0; i < textLines.size(); i++) {
+                        Ref<EntityStore> entityRef = existingRefs.get(i);
+                        if (entityRef == null) continue;
+
+                        // Update nameplate text directly
+                        Nameplate nameplate = store.getComponent(entityRef, Nameplate.getComponentType());
+                        if (nameplate != null) {
+                            nameplate.setText(textLines.get(i));
+                        }
+                    }
+
+                    logger.fine("In-place updated " + textLines.size() + " display entities at " + position);
+                } catch (Exception e) {
+                    logger.warning("Failed in-place update, falling back to recreate: " + e.getMessage());
+                    // Fall back to recreate
+                    createDisplay(world, position, lines);
+                }
+            });
+        } else {
+            // Line count changed or no existing display - recreate
+            createDisplay(world, position, lines);
+        }
     }
 
     /**
@@ -160,7 +257,10 @@ public class SignDisplayManager {
         }
 
         String posKey = world != null ? getPositionKey(world, position) : null;
-        List<Ref<EntityStore>> entityRefs = posKey != null ? displayEntities.remove(posKey) : null;
+        if (posKey == null) return;
+
+        List<Ref<EntityStore>> entityRefs = displayEntities.remove(posKey);
+        displayText.remove(posKey); // Also clean up text tracking
 
         if (entityRefs != null && !entityRefs.isEmpty() && world != null) {
             world.execute(() -> {
@@ -183,6 +283,16 @@ public class SignDisplayManager {
     public void cleanup() {
         logger.info("Cleaning up sign displays...");
         displayEntities.clear();
+        displayText.clear();
+    }
+
+    /**
+     * Check if a display exists for the given position.
+     */
+    public boolean hasDisplay(World world, Vector3i position) {
+        if (world == null || position == null) return false;
+        String posKey = getPositionKey(world, position);
+        return displayEntities.containsKey(posKey);
     }
 
     private String getPositionKey(World world, Vector3i position) {
@@ -200,5 +310,26 @@ public class SignDisplayManager {
      */
     public int getDisplayCount() {
         return displayEntities.size();
+    }
+
+    /**
+     * Clear tracking for a specific position, forcing recreation on next createDisplay call.
+     * Used when entities may have been removed by the game.
+     */
+    public void invalidateDisplay(World world, Vector3i position) {
+        if (world == null || position == null) return;
+        String posKey = getPositionKey(world, position);
+        displayEntities.remove(posKey);
+        displayText.remove(posKey);
+    }
+
+    /**
+     * Clear all display tracking. Forces all displays to be recreated on next spawn attempt.
+     * Use this when entities may have been invalidated by chunk unloads etc.
+     */
+    public void invalidateAllDisplays() {
+        displayEntities.clear();
+        displayText.clear();
+        logger.fine("Invalidated all display tracking");
     }
 }

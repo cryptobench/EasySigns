@@ -5,6 +5,7 @@ import com.easysigns.config.SignConfig;
 import com.easysigns.data.SignData;
 import com.easysigns.data.SignStorage;
 import com.easysigns.listener.SignChatListener;
+import com.easysigns.listener.SignDisconnectListener;
 import com.easysigns.listener.SignInteractionListener;
 import com.easysigns.sign.SignDisplayEntity;
 import com.easysigns.sign.SignDisplayManager;
@@ -19,7 +20,10 @@ import com.hypixel.hytale.server.core.universe.world.events.AllWorldsLoadedEvent
 import com.hypixel.hytale.server.core.universe.world.events.ChunkPreLoadProcessEvent;
 
 import java.util.Map;
-
+import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
 /**
@@ -30,6 +34,8 @@ import java.util.logging.Logger;
  */
 public class EasySigns extends JavaPlugin {
 
+    private static final long SAVE_INTERVAL_SECONDS = 300; // Save every 5 minutes
+
     private static EasySigns instance;
     private Logger logger;
     private SignConfig config;
@@ -37,7 +43,9 @@ public class EasySigns extends JavaPlugin {
     private SignDisplayManager displayManager;
     private SignInteractionListener interactionListener;
     private SignChatListener chatListener;
+    private SignDisconnectListener disconnectListener;
     private SignPlaceSystem signPlaceSystem;
+    private ScheduledExecutorService saveScheduler;
 
     public EasySigns(JavaPluginInit init) {
         super(init);
@@ -79,17 +87,98 @@ public class EasySigns extends JavaPlugin {
         this.chatListener = new SignChatListener(this, signStorage);
         chatListener.register(getEventRegistry());
 
+        // Register disconnect listener for session cleanup
+        this.disconnectListener = new SignDisconnectListener(this);
+        disconnectListener.register(getEventRegistry());
+
         // Register block place system to detect sign placements
         this.signPlaceSystem = new SignPlaceSystem(this, signStorage);
         getEntityStoreRegistry().registerSystem(signPlaceSystem);
 
-        // Register AllWorldsLoadedEvent to spawn displays after server starts
+        // Register AllWorldsLoadedEvent to spawn all sign displays on startup
         getEventRegistry().registerGlobal(AllWorldsLoadedEvent.class, this::onAllWorldsLoaded);
 
-        // Register ChunkPreLoadProcessEvent to spawn displays when chunks load
+        // Register ChunkPreLoadProcessEvent for signs in chunks loaded after startup
         getEventRegistry().registerGlobal(ChunkPreLoadProcessEvent.class, this::onChunkLoad);
 
+        // Create periodic task scheduler for saves and display refresh
+        this.saveScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "EasySigns-Scheduler");
+            t.setDaemon(true);
+            return t;
+        });
+
+        // Periodic save (every 5 minutes)
+        saveScheduler.scheduleAtFixedRate(
+            this::periodicSave,
+            SAVE_INTERVAL_SECONDS,
+            SAVE_INTERVAL_SECONDS,
+            TimeUnit.SECONDS
+        );
+
+        // Periodic display refresh (every 10 seconds) - ensures signs stay visible
+        saveScheduler.scheduleAtFixedRate(
+            this::refreshDisplays,
+            10,
+            10,
+            TimeUnit.SECONDS
+        );
+
         logger.info("EasySigns setup complete!");
+    }
+
+    /**
+     * Periodic save task - saves if there are unsaved changes.
+     */
+    private void periodicSave() {
+        try {
+            if (signStorage != null && signStorage.saveIfDirty()) {
+                logger.fine("Periodic save completed");
+            }
+        } catch (Exception e) {
+            logger.warning("Periodic save failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Periodic display refresh - respawns any missing sign displays.
+     * This handles cases where entities are removed by the game's entity tracker.
+     * createDisplay() validates entity existence before skipping, so this is safe.
+     */
+    private void refreshDisplays() {
+        try {
+            if (signStorage == null || displayManager == null) return;
+
+            Map<String, SignData> allSigns = signStorage.getAllSigns();
+
+            for (Map.Entry<String, SignData> entry : allSigns.entrySet()) {
+                String key = entry.getKey();
+                SignData signData = entry.getValue();
+
+                // Skip signs with no text
+                if (!signData.hasText()) continue;
+
+                String[] parts = SignStorage.parseKey(key);
+                if (parts == null) continue;
+
+                String worldName = parts[0];
+                try {
+                    int x = Integer.parseInt(parts[1]);
+                    int y = Integer.parseInt(parts[2]);
+                    int z = Integer.parseInt(parts[3]);
+
+                    World world = Universe.get().getWorld(worldName);
+                    if (world == null) continue;
+
+                    Vector3i position = new Vector3i(x, y, z);
+                    displayManager.createDisplay(world, position, signData.getLines());
+
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        } catch (Exception e) {
+            logger.warning("Display refresh failed: " + e.getMessage());
+        }
     }
 
     /**
@@ -97,7 +186,7 @@ public class EasySigns extends JavaPlugin {
      * Spawns display entities for all stored signs.
      */
     private void onAllWorldsLoaded(AllWorldsLoadedEvent event) {
-        logger.info("AllWorldsLoadedEvent received - spawning sign displays...");
+        logger.info("Spawning sign displays...");
 
         Map<String, SignData> allSigns = signStorage.getAllSigns();
         int spawnedCount = 0;
@@ -107,10 +196,7 @@ public class EasySigns extends JavaPlugin {
             SignData signData = entry.getValue();
 
             String[] parts = SignStorage.parseKey(key);
-            if (parts == null) {
-                logger.warning("Invalid sign key: " + key);
-                continue;
-            }
+            if (parts == null) continue;
 
             String worldName = parts[0];
             try {
@@ -119,17 +205,13 @@ public class EasySigns extends JavaPlugin {
                 int z = Integer.parseInt(parts[3]);
 
                 World world = Universe.get().getWorld(worldName);
-                if (world == null) {
-                    logger.warning("World not found for sign: " + worldName);
-                    continue;
-                }
+                if (world == null) continue;
 
                 Vector3i position = new Vector3i(x, y, z);
                 displayManager.createDisplay(world, position, signData.getLines());
                 spawnedCount++;
 
-            } catch (NumberFormatException e) {
-                logger.warning("Failed to parse position from key: " + key);
+            } catch (NumberFormatException ignored) {
             }
         }
 
@@ -139,6 +221,7 @@ public class EasySigns extends JavaPlugin {
     /**
      * Called when a chunk is loaded.
      * Spawns display entities for any signs in that chunk.
+     * Uses spatial index for O(1) lookup instead of scanning all signs.
      */
     private void onChunkLoad(ChunkPreLoadProcessEvent event) {
         WorldChunk chunk = event.getChunk();
@@ -151,31 +234,30 @@ public class EasySigns extends JavaPlugin {
         int chunkX = chunk.getX();
         int chunkZ = chunk.getZ();
 
-        // Chunk coordinates to block coordinates (assuming 16x16 chunks)
-        int minX = chunkX * 16;
-        int maxX = minX + 15;
-        int minZ = chunkZ * 16;
-        int maxZ = minZ + 15;
+        // O(1) lookup using spatial index - only get signs in this specific chunk
+        Set<String> signsInChunk = signStorage.getSignsInChunk(worldName, chunkX, chunkZ);
+        if (signsInChunk.isEmpty()) {
+            return; // No signs in this chunk, fast exit
+        }
 
+        // Get all signs once (unmodifiable view, no copy)
         Map<String, SignData> allSigns = signStorage.getAllSigns();
 
-        for (Map.Entry<String, SignData> entry : allSigns.entrySet()) {
-            String key = entry.getKey();
-            String[] parts = SignStorage.parseKey(key);
-            if (parts == null) continue;
+        for (String posKey : signsInChunk) {
+            SignData signData = allSigns.get(posKey);
+            if (signData == null) continue;
 
-            // Check if this sign is in the loading chunk
-            if (!parts[0].equals(worldName)) continue;
+            String[] parts = SignStorage.parseKey(posKey);
+            if (parts == null) continue;
 
             try {
                 int x = Integer.parseInt(parts[1]);
+                int y = Integer.parseInt(parts[2]);
                 int z = Integer.parseInt(parts[3]);
+                Vector3i position = new Vector3i(x, y, z);
 
-                if (x >= minX && x <= maxX && z >= minZ && z <= maxZ) {
-                    int y = Integer.parseInt(parts[2]);
-                    Vector3i position = new Vector3i(x, y, z);
-                    displayManager.createDisplay(world, position, entry.getValue().getLines());
-                }
+                // createDisplay already handles duplicates by removing existing display first
+                displayManager.createDisplay(world, position, signData.getLines());
             } catch (NumberFormatException ignored) {
             }
         }
@@ -190,11 +272,17 @@ public class EasySigns extends JavaPlugin {
     @Override
     public void shutdown() {
         logger.info("Shutting down EasySigns...");
+
+        // Stop the save scheduler
+        if (saveScheduler != null) {
+            saveScheduler.shutdownNow();
+        }
+
         if (displayManager != null) {
             displayManager.cleanup();
         }
         if (signStorage != null) {
-            signStorage.save();
+            signStorage.save(); // Force final save
         }
         logger.info("EasySigns shut down.");
     }
