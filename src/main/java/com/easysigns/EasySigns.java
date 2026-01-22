@@ -273,11 +273,16 @@ public class EasySigns extends JavaPlugin {
         int chunkX = chunk.getX();
         int chunkZ = chunk.getZ();
 
+        // Debug: log chunk coordinates to verify chunk size assumption
+        logger.fine("ChunkLoad event: world=" + worldName + " chunkX=" + chunkX + " chunkZ=" + chunkZ);
+
         // O(1) lookup using spatial index - only get signs in this specific chunk
         Set<String> signsInChunk = signStorage.getSignsInChunk(worldName, chunkX, chunkZ);
         if (signsInChunk.isEmpty()) {
             return; // No signs in this chunk, fast exit
         }
+
+        logger.info("ChunkLoad: Found " + signsInChunk.size() + " signs in chunk " + chunkX + "," + chunkZ);
 
         // Get all signs once (unmodifiable view, no copy)
         Map<String, SignData> allSigns = signStorage.getAllSigns();
@@ -307,10 +312,12 @@ public class EasySigns extends JavaPlugin {
         logger.info("========== EASYSIGNS STARTED ==========");
         logger.info("Signs loaded: " + signStorage.getSignCount());
 
-        // Wait for universe to be fully ready, then spawn all sign displays
+        // Mark all signs as dirty so they get spawned by the periodic refresh task.
+        // This is more reliable than trying to spawn immediately, since chunks may not be loaded yet.
+        // The refresh task runs every 10 seconds and will spawn displays once chunks are ready.
         Universe.get().getUniverseReady().thenRun(() -> {
-            logger.info("Universe ready - spawning sign displays...");
-            spawnAllSignDisplays();
+            logger.info("Universe ready - marking all signs for refresh...");
+            markAllDisplaysDirty();
         });
     }
 

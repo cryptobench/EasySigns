@@ -93,6 +93,23 @@ public class SignStorage {
         }
 
         logger.info("Rebuilt indexes: " + signIdIndex.size() + " sign IDs, " + chunkIndex.size() + " chunks, " + worldIndex.size() + " worlds");
+
+        // Debug: log first sign's chunk assignment to verify coordinate system
+        if (!signs.isEmpty()) {
+            String firstKey = signs.keySet().iterator().next();
+            String[] parts = parseKey(firstKey);
+            if (parts != null) {
+                try {
+                    int x = Integer.parseInt(parts[1]);
+                    int z = Integer.parseInt(parts[3]);
+                    int chunk32X = x >> 5; // div 32
+                    int chunk32Z = z >> 5;
+                    int chunk16X = x >> 4; // div 16
+                    int chunk16Z = z >> 4;
+                    logger.info("DEBUG: Sign at x=" + x + ",z=" + z + " -> chunk(32x32)=" + chunk32X + "," + chunk32Z + " chunk(16x16)=" + chunk16X + "," + chunk16Z);
+                } catch (NumberFormatException ignored) {}
+            }
+        }
     }
 
     /**
