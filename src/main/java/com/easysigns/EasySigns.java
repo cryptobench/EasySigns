@@ -16,7 +16,6 @@ import com.hypixel.hytale.server.core.plugin.JavaPluginInit;
 import com.hypixel.hytale.server.core.universe.Universe;
 import com.hypixel.hytale.server.core.universe.world.World;
 import com.hypixel.hytale.server.core.universe.world.chunk.WorldChunk;
-import com.hypixel.hytale.server.core.universe.world.events.AllWorldsLoadedEvent;
 import com.hypixel.hytale.server.core.universe.world.events.ChunkPreLoadProcessEvent;
 
 import java.util.Map;
@@ -94,9 +93,6 @@ public class EasySigns extends JavaPlugin {
         // Register block place system to detect sign placements
         this.signPlaceSystem = new SignPlaceSystem(this, signStorage);
         getEntityStoreRegistry().registerSystem(signPlaceSystem);
-
-        // Register AllWorldsLoadedEvent to spawn all sign displays on startup
-        getEventRegistry().registerGlobal(AllWorldsLoadedEvent.class, this::onAllWorldsLoaded);
 
         // Register ChunkPreLoadProcessEvent for signs in chunks loaded after startup
         getEventRegistry().registerGlobal(ChunkPreLoadProcessEvent.class, this::onChunkLoad);
@@ -221,18 +217,19 @@ public class EasySigns extends JavaPlugin {
     }
 
     /**
-     * Called when all worlds are loaded on server startup.
      * Spawns display entities for all stored signs.
+     * Called when universe is ready after server startup.
      */
-    private void onAllWorldsLoaded(AllWorldsLoadedEvent event) {
-        logger.info("Spawning sign displays...");
-
+    private void spawnAllSignDisplays() {
         Map<String, SignData> allSigns = signStorage.getAllSigns();
         int spawnedCount = 0;
 
         for (Map.Entry<String, SignData> entry : allSigns.entrySet()) {
             String key = entry.getKey();
             SignData signData = entry.getValue();
+
+            // Skip signs with no text
+            if (!signData.hasText()) continue;
 
             String[] parts = SignStorage.parseKey(key);
             if (parts == null) continue;
@@ -244,7 +241,10 @@ public class EasySigns extends JavaPlugin {
                 int z = Integer.parseInt(parts[3]);
 
                 World world = Universe.get().getWorld(worldName);
-                if (world == null) continue;
+                if (world == null) {
+                    logger.warning("World '" + worldName + "' not found for sign at " + key);
+                    continue;
+                }
 
                 Vector3i position = new Vector3i(x, y, z);
                 displayManager.createDisplay(world, position, signData.getLines());
@@ -306,6 +306,12 @@ public class EasySigns extends JavaPlugin {
     public void start() {
         logger.info("========== EASYSIGNS STARTED ==========");
         logger.info("Signs loaded: " + signStorage.getSignCount());
+
+        // Wait for universe to be fully ready, then spawn all sign displays
+        Universe.get().getUniverseReady().thenRun(() -> {
+            logger.info("Universe ready - spawning sign displays...");
+            spawnAllSignDisplays();
+        });
     }
 
     @Override
