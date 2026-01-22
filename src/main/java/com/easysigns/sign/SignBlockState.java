@@ -26,6 +26,7 @@ public class SignBlockState extends BlockState {
 
     public static final int MAX_LINES = 4;
     public static final int MAX_LINE_LENGTH = 32;
+    private static final Color DEFAULT_TEXT_COLOR = new Color(0, 0, 0); // Black text
 
     /**
      * Codec for serialization/deserialization of SignBlockState.
@@ -106,7 +107,7 @@ public class SignBlockState extends BlockState {
     public SignBlockState() {
         this.lines = new String[MAX_LINES];
         Arrays.fill(this.lines, "");
-        this.textColor = new Color(0, 0, 0); // Black text by default
+        this.textColor = DEFAULT_TEXT_COLOR;
         this.glowing = false;
     }
 
@@ -222,7 +223,7 @@ public class SignBlockState extends BlockState {
      * Set the text color.
      */
     public void setTextColor(Color color) {
-        this.textColor = color != null ? color : new Color(0, 0, 0);
+        this.textColor = color != null ? color : DEFAULT_TEXT_COLOR;
         markNeedsSave();
     }
 

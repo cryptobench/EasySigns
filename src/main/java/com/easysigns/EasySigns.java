@@ -36,7 +36,7 @@ public class EasySigns extends JavaPlugin {
 
     private static final long SAVE_INTERVAL_SECONDS = 300; // Save every 5 minutes
 
-    private static EasySigns instance;
+    private static volatile EasySigns instance;
     private Logger logger;
     private SignConfig config;
     private SignStorage signStorage;
@@ -116,11 +116,20 @@ public class EasySigns extends JavaPlugin {
             TimeUnit.SECONDS
         );
 
-        // Periodic display refresh (every 10 seconds) - ensures signs stay visible
+        // Periodic display refresh (every 10 seconds) - refreshes only dirty displays
         saveScheduler.scheduleAtFixedRate(
             this::refreshDisplays,
             10,
             10,
+            TimeUnit.SECONDS
+        );
+
+        // Periodic full validation (every 5 minutes) - marks all displays for refresh
+        // This catches any displays that were invalidated but not marked dirty
+        saveScheduler.scheduleAtFixedRate(
+            this::markAllDisplaysDirty,
+            SAVE_INTERVAL_SECONDS, // Start after 5 minutes
+            SAVE_INTERVAL_SECONDS, // Run every 5 minutes
             TimeUnit.SECONDS
         );
 
@@ -141,19 +150,49 @@ public class EasySigns extends JavaPlugin {
     }
 
     /**
-     * Periodic display refresh - respawns any missing sign displays.
+     * Mark all displays as dirty for a full refresh.
+     * Runs periodically to catch any invalidated displays that weren't marked.
+     */
+    private void markAllDisplaysDirty() {
+        try {
+            if (signStorage == null || displayManager == null) return;
+
+            // Mark all signs with text as dirty
+            Map<String, SignData> allSigns = signStorage.getAllSigns();
+            int count = 0;
+            for (Map.Entry<String, SignData> entry : allSigns.entrySet()) {
+                if (entry.getValue().hasText()) {
+                    displayManager.markDisplayDirty(entry.getKey());
+                    count++;
+                }
+            }
+            logger.fine("Marked " + count + " displays as dirty for refresh");
+        } catch (Exception e) {
+            logger.warning("Failed to mark displays dirty: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Periodic display refresh - only refreshes dirty displays.
      * This handles cases where entities are removed by the game's entity tracker.
-     * createDisplay() validates entity existence before skipping, so this is safe.
+     * Much more efficient than scanning all signs every 10 seconds.
      */
     private void refreshDisplays() {
         try {
             if (signStorage == null || displayManager == null) return;
 
+            // Only process dirty displays - O(dirty count) instead of O(all signs)
+            Set<String> dirty = displayManager.getDirtyDisplaysAndClear();
+            if (dirty.isEmpty()) {
+                return; // Nothing to refresh!
+            }
+
+            logger.fine("Refreshing " + dirty.size() + " dirty displays");
             Map<String, SignData> allSigns = signStorage.getAllSigns();
 
-            for (Map.Entry<String, SignData> entry : allSigns.entrySet()) {
-                String key = entry.getKey();
-                SignData signData = entry.getValue();
+            for (String key : dirty) {
+                SignData signData = allSigns.get(key);
+                if (signData == null) continue;
 
                 // Skip signs with no text
                 if (!signData.hasText()) continue;

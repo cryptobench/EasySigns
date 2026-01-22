@@ -21,6 +21,10 @@ public class SignData {
     private String ownerUuid;   // UUID of the player who created the sign
     private String ownerName;   // Username of the owner (for display)
 
+    // Cached hasText flag - avoids O(n) iteration on every call
+    private transient boolean cachedHasText = false;
+    private transient boolean cacheInitialized = false;
+
     public SignData() {
         this.lines = new String[]{"", "", "", ""};
         this.colorR = 0;
@@ -29,10 +33,21 @@ public class SignData {
         this.signId = UUID.randomUUID().toString().substring(0, 8); // Short unique ID
         this.ownerUuid = null;
         this.ownerName = null;
+        this.cachedHasText = false;
+        this.cacheInitialized = true; // Empty lines, so cache is valid
     }
 
     public String[] getLines() {
         return Arrays.copyOf(lines, lines.length);
+    }
+
+    /**
+     * Internal accessor for direct read-only access to lines array.
+     * Avoids defensive copy overhead. For use by SignDisplayManager only.
+     * DO NOT MODIFY the returned array!
+     */
+    String[] getLinesInternal() {
+        return lines;
     }
 
     public String getLine(int index) {
@@ -49,12 +64,22 @@ public class SignData {
         } else {
             lines[index] = text;
         }
+        updateHasTextCache();
     }
 
     public void setLines(String[] newLines) {
+        // Set each line without triggering cache update per line
         for (int i = 0; i < MAX_LINES; i++) {
-            setLine(i, newLines != null && i < newLines.length ? newLines[i] : "");
+            String text = newLines != null && i < newLines.length ? newLines[i] : "";
+            if (text == null) {
+                lines[i] = "";
+            } else if (text.length() > MAX_LINE_LENGTH) {
+                lines[i] = text.substring(0, MAX_LINE_LENGTH);
+            } else {
+                lines[i] = text;
+            }
         }
+        updateHasTextCache();
     }
 
     public Color getColor() {
@@ -78,11 +103,38 @@ public class SignData {
         return sb.toString();
     }
 
+    /**
+     * Check if sign has any non-empty text.
+     * Uses lazy-initialized cache for O(1) performance after first call.
+     */
     public boolean hasText() {
-        for (String line : lines) {
-            if (line != null && !line.isEmpty()) return true;
+        if (!cacheInitialized) {
+            updateHasTextCache();
         }
-        return false;
+        return cachedHasText;
+    }
+
+    /**
+     * Update the cached hasText flag.
+     * Called after any line modification.
+     */
+    private void updateHasTextCache() {
+        cachedHasText = false;
+        for (String line : lines) {
+            if (line != null && !line.isEmpty()) {
+                cachedHasText = true;
+                break;
+            }
+        }
+        cacheInitialized = true;
+    }
+
+    /**
+     * Initialize the hasText cache after JSON deserialization.
+     * Call this after loading from storage.
+     */
+    public void initializeCache() {
+        updateHasTextCache();
     }
 
     // Ownership and ID methods

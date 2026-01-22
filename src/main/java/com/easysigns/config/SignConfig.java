@@ -234,9 +234,9 @@ public class SignConfig {
             return null;
         }
 
-        String lowerText = text.toLowerCase();
+        // Patterns are compiled with CASE_INSENSITIVE flag, so toLowerCase() is redundant
         for (int i = 0; i < bannedPatterns.size(); i++) {
-            if (bannedPatterns.get(i).matcher(lowerText).find()) {
+            if (bannedPatterns.get(i).matcher(text).find()) {
                 return bannedWords.get(i);
             }
         }

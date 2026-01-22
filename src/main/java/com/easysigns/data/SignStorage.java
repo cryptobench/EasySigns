@@ -43,6 +43,9 @@ public class SignStorage {
     // Spatial index: "world:chunkX:chunkZ" -> Set of position keys in that chunk
     private final Map<String, Set<String>> chunkIndex;
 
+    // World index: "worldName" -> Set of position keys in that world
+    private final Map<String, Set<String>> worldIndex;
+
     // Dirty flag for batched saves
     private final AtomicBoolean dirty = new AtomicBoolean(false);
 
@@ -52,6 +55,7 @@ public class SignStorage {
         this.signs = new ConcurrentHashMap<>();
         this.signIdIndex = new ConcurrentHashMap<>();
         this.chunkIndex = new ConcurrentHashMap<>();
+        this.worldIndex = new ConcurrentHashMap<>();
         load();
         rebuildIndexes();
     }
@@ -63,6 +67,7 @@ public class SignStorage {
     private void rebuildIndexes() {
         signIdIndex.clear();
         chunkIndex.clear();
+        worldIndex.clear();
 
         for (Map.Entry<String, SignData> entry : signs.entrySet()) {
             String posKey = entry.getKey();
@@ -79,9 +84,15 @@ public class SignStorage {
             if (chunkKey != null) {
                 chunkIndex.computeIfAbsent(chunkKey, k -> ConcurrentHashMap.newKeySet()).add(posKey);
             }
+
+            // Build world index
+            String worldName = getWorldFromKey(posKey);
+            if (worldName != null) {
+                worldIndex.computeIfAbsent(worldName, k -> ConcurrentHashMap.newKeySet()).add(posKey);
+            }
         }
 
-        logger.info("Rebuilt indexes: " + signIdIndex.size() + " sign IDs, " + chunkIndex.size() + " chunks");
+        logger.info("Rebuilt indexes: " + signIdIndex.size() + " sign IDs, " + chunkIndex.size() + " chunks, " + worldIndex.size() + " worlds");
     }
 
     /**
@@ -102,6 +113,16 @@ public class SignStorage {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /**
+     * Extract world name from position key without full parsing.
+     * More efficient than parseKey() when only world name is needed.
+     */
+    private static String getWorldFromKey(String posKey) {
+        if (posKey == null) return null;
+        int idx = posKey.indexOf(':');
+        return idx > 0 ? posKey.substring(0, idx) : null;
     }
 
     /**
@@ -154,6 +175,7 @@ public class SignStorage {
         if (chunkKey != null) {
             chunkIndex.computeIfAbsent(chunkKey, k -> ConcurrentHashMap.newKeySet()).add(key);
         }
+        worldIndex.computeIfAbsent(worldName, k -> ConcurrentHashMap.newKeySet()).add(key);
 
         markDirty();
         logger.fine("Created sign at " + key);
@@ -180,6 +202,7 @@ public class SignStorage {
         if (chunkKey != null) {
             chunkIndex.computeIfAbsent(chunkKey, k -> ConcurrentHashMap.newKeySet()).add(key);
         }
+        worldIndex.computeIfAbsent(worldName, k -> ConcurrentHashMap.newKeySet()).add(key);
 
         markDirty();
         logger.fine("Created sign with owner at " + key);
@@ -233,6 +256,14 @@ public class SignStorage {
                     }
                 }
             }
+            // Update world index
+            Set<String> worldSigns = worldIndex.get(worldName);
+            if (worldSigns != null) {
+                worldSigns.remove(key);
+                if (worldSigns.isEmpty()) {
+                    worldIndex.remove(worldName);
+                }
+            }
 
             markDirty();
             logger.fine("Removed sign at " + key);
@@ -275,16 +306,83 @@ public class SignStorage {
     }
 
     /**
-     * Parse a position key into components.
+     * Find signs near a position using chunk-based spatial index.
+     * Returns list of [position, signData] entries within radius.
+     * Much more efficient than iterating all signs in a world.
+     */
+    public List<Map.Entry<Vector3i, SignData>> getSignsNearPosition(
+            String worldName, double playerX, double playerY, double playerZ, double radius) {
+
+        List<Map.Entry<Vector3i, SignData>> result = new ArrayList<>();
+        double radiusSq = radius * radius;
+
+        // Calculate chunk range to search
+        int playerChunkX = (int) Math.floor(playerX) >> 5; // Hytale uses 32x32 chunks
+        int playerChunkZ = (int) Math.floor(playerZ) >> 5;
+        int chunkRadius = (int) Math.ceil(radius / 32.0) + 1;
+
+        // Only search chunks within range
+        for (int cx = playerChunkX - chunkRadius; cx <= playerChunkX + chunkRadius; cx++) {
+            for (int cz = playerChunkZ - chunkRadius; cz <= playerChunkZ + chunkRadius; cz++) {
+                Set<String> signsInChunk = getSignsInChunk(worldName, cx, cz);
+                if (signsInChunk.isEmpty()) continue;
+
+                for (String posKey : signsInChunk) {
+                    String[] parts = parseKey(posKey);
+                    if (parts == null) continue;
+
+                    try {
+                        int x = Integer.parseInt(parts[1]);
+                        int y = Integer.parseInt(parts[2]);
+                        int z = Integer.parseInt(parts[3]);
+
+                        // Calculate distance to sign center
+                        double dx = playerX - (x + 0.5);
+                        double dy = playerY - (y + 0.5);
+                        double dz = playerZ - (z + 0.5);
+                        double distSq = dx * dx + dy * dy + dz * dz;
+
+                        if (distSq <= radiusSq) {
+                            SignData data = signs.get(posKey);
+                            if (data != null) {
+                                result.add(Map.entry(new Vector3i(x, y, z), data));
+                            }
+                        }
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Parse a position key into components using index-based parsing.
      * Returns [worldName, x, y, z] or null if invalid.
+     * More efficient than String.split() - avoids regex and array allocation overhead.
      */
     public static String[] parseKey(String key) {
         if (key == null) return null;
-        String[] parts = key.split(":");
-        if (parts.length == 4) {
-            return parts;
-        }
-        return null;
+
+        int i1 = key.indexOf(':');
+        if (i1 <= 0) return null;
+
+        int i2 = key.indexOf(':', i1 + 1);
+        if (i2 <= i1) return null;
+
+        int i3 = key.indexOf(':', i2 + 1);
+        if (i3 <= i2 || i3 >= key.length() - 1) return null;
+
+        // Verify no more colons (exactly 4 parts)
+        if (key.indexOf(':', i3 + 1) != -1) return null;
+
+        return new String[] {
+            key.substring(0, i1),
+            key.substring(i1 + 1, i2),
+            key.substring(i2 + 1, i3),
+            key.substring(i3 + 1)
+        };
     }
 
     /**
@@ -332,6 +430,17 @@ public class SignStorage {
                     }
                 }
             }
+            // Update world index
+            String worldName = getWorldFromKey(posKey);
+            if (worldName != null) {
+                Set<String> worldSigns = worldIndex.get(worldName);
+                if (worldSigns != null) {
+                    worldSigns.remove(posKey);
+                    if (worldSigns.isEmpty()) {
+                        worldIndex.remove(worldName);
+                    }
+                }
+            }
 
             markDirty();
             logger.fine("Removed sign with ID " + signId + " at " + posKey);
@@ -341,23 +450,34 @@ public class SignStorage {
     }
 
     /**
+     * Get all sign position keys in a specific world. O(1) lookup using world index.
+     * Returns position keys for signs in the world.
+     */
+    public Set<String> getSignKeysInWorld(String worldName) {
+        Set<String> result = worldIndex.get(worldName);
+        return result != null ? Collections.unmodifiableSet(result) : Collections.emptySet();
+    }
+
+    /**
      * Get all sign positions in a specific world.
+     * Uses world index for O(1) initial lookup instead of O(n) prefix scan.
      */
     public List<Vector3i> getSignsInWorld(String worldName) {
-        List<Vector3i> result = new ArrayList<>();
-        String prefix = worldName + ":";
+        Set<String> keys = worldIndex.get(worldName);
+        if (keys == null || keys.isEmpty()) {
+            return Collections.emptyList();
+        }
 
-        for (String key : signs.keySet()) {
-            if (key.startsWith(prefix)) {
-                String[] parts = parseKey(key);
-                if (parts != null) {
-                    try {
-                        int x = Integer.parseInt(parts[1]);
-                        int y = Integer.parseInt(parts[2]);
-                        int z = Integer.parseInt(parts[3]);
-                        result.add(new Vector3i(x, y, z));
-                    } catch (NumberFormatException ignored) {
-                    }
+        List<Vector3i> result = new ArrayList<>(keys.size());
+        for (String key : keys) {
+            String[] parts = parseKey(key);
+            if (parts != null) {
+                try {
+                    int x = Integer.parseInt(parts[1]);
+                    int y = Integer.parseInt(parts[2]);
+                    int z = Integer.parseInt(parts[3]);
+                    result.add(new Vector3i(x, y, z));
+                } catch (NumberFormatException ignored) {
                 }
             }
         }
@@ -424,6 +544,10 @@ public class SignStorage {
                 Map<String, SignData> loaded = GSON.fromJson(json, STORAGE_TYPE);
                 if (loaded != null) {
                     signs.putAll(loaded);
+                    // Initialize transient caches after JSON deserialization
+                    for (SignData signData : signs.values()) {
+                        signData.initializeCache();
+                    }
                 }
                 logger.info("Loaded " + signs.size() + " signs from storage");
             } catch (IOException e) {

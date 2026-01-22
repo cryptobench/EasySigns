@@ -7,6 +7,7 @@ import com.hypixel.hytale.server.core.universe.world.World;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Manages sign editing sessions for players.
@@ -24,7 +25,7 @@ public class SignEditSession {
         public final Vector3i position;
         public final SignData signData;
         public final World world;
-        public int currentLine = 0;
+        public final AtomicInteger currentLine = new AtomicInteger(0);
 
         public EditingState(String worldName, Vector3i position, SignData signData, World world) {
             this.worldName = worldName;
@@ -70,12 +71,13 @@ public class SignEditSession {
         EditingState state = editingSessions.get(playerId);
         if (state == null) return false;
 
-        if (state.currentLine < SignData.MAX_LINES) {
-            state.signData.setLine(state.currentLine, text);
-            state.currentLine++;
+        int line = state.currentLine.get();
+        if (line < SignData.MAX_LINES) {
+            state.signData.setLine(line, text);
+            state.currentLine.incrementAndGet();
         }
 
-        return state.currentLine < SignData.MAX_LINES;
+        return state.currentLine.get() < SignData.MAX_LINES;
     }
 
     /**
@@ -84,7 +86,7 @@ public class SignEditSession {
     public static int getLinesRemaining(UUID playerId) {
         EditingState state = editingSessions.get(playerId);
         if (state == null) return 0;
-        return SignData.MAX_LINES - state.currentLine;
+        return SignData.MAX_LINES - state.currentLine.get();
     }
 
     /**
@@ -93,6 +95,6 @@ public class SignEditSession {
     public static int getCurrentLineNumber(UUID playerId) {
         EditingState state = editingSessions.get(playerId);
         if (state == null) return 0;
-        return state.currentLine + 1;
+        return state.currentLine.get() + 1;
     }
 }

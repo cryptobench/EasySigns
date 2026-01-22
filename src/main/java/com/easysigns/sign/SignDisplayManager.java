@@ -15,8 +15,10 @@ import com.hypixel.hytale.server.core.universe.world.World;
 import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 
@@ -43,16 +45,32 @@ public class SignDisplayManager {
     // Tracks the current text for each display (for detecting what changed)
     private final Map<String, List<String>> displayText;
 
+    // Dirty displays that need refresh (chunk unload, entity validation failure, etc.)
+    private final Set<String> dirtyDisplays;
+
     // Spacing between lines
     private static final double LINE_HEIGHT = 0.25;
     // Base Y offset from block position
     private static final double BASE_Y_OFFSET = 1.0;
+
+    // Cached tiny model reference - avoids creating new model per display line
+    private static final Model TINY_MODEL;
+    static {
+        Model temp = null;
+        try {
+            temp = new Model.ModelReference("hytale:player", 0.01f, null).toModel();
+        } catch (Exception e) {
+            // Model creation failed - will fall back to no model
+        }
+        TINY_MODEL = temp;
+    }
 
     public SignDisplayManager(EasySigns plugin) {
         this.plugin = plugin;
         this.logger = plugin.getPluginLogger();
         this.displayEntities = new ConcurrentHashMap<>();
         this.displayText = new ConcurrentHashMap<>();
+        this.dirtyDisplays = ConcurrentHashMap.newKeySet();
     }
 
     /**
@@ -82,34 +100,43 @@ public class SignDisplayManager {
             return;
         }
 
-        // Check if we already have a display with the same text
+        // Check if we already have a display with the same text (thread-safe: just comparing strings)
         List<String> existingText = displayText.get(posKey);
-        List<Ref<EntityStore>> existingRefs = displayEntities.get(posKey);
+        if (existingText != null && existingText.equals(textLines)) {
+            // Text matches - validation of entities must happen on world thread
+            // Schedule validation and potential recreation
+            world.execute(() -> {
+                try {
+                    Store<EntityStore> store = world.getEntityStore().getStore();
+                    List<Ref<EntityStore>> existingRefs = displayEntities.get(posKey);
 
-        if (existingText != null && existingText.equals(textLines) && existingRefs != null && !existingRefs.isEmpty()) {
-            // Verify entities still exist by checking if we can access them
-            try {
-                Store<EntityStore> store = world.getEntityStore().getStore();
-                boolean allValid = true;
-                for (Ref<EntityStore> ref : existingRefs) {
-                    if (ref == null || store.getComponent(ref, Nameplate.getComponentType()) == null) {
-                        allValid = false;
-                        break;
+                    if (existingRefs != null && !existingRefs.isEmpty()) {
+                        boolean allValid = true;
+                        for (Ref<EntityStore> ref : existingRefs) {
+                            if (ref == null || store.getComponent(ref, Nameplate.getComponentType()) == null) {
+                                allValid = false;
+                                break;
+                            }
+                        }
+                        if (allValid) {
+                            logger.fine("Display at " + position + " still valid, skipping");
+                            return;
+                        }
+                        // Entities invalidated - mark for dirty refresh
+                        logger.fine("Display at " + position + " entities invalidated, recreating");
                     }
+
+                    // Entities are invalid - recreate them
+                    recreateDisplayEntities(store, world, position, posKey, textLines);
+
+                } catch (Exception e) {
+                    logger.fine("Display at " + position + " validation failed: " + e.getMessage());
                 }
-                if (allValid) {
-                    logger.fine("Display at " + position + " still valid, skipping");
-                    return;
-                }
-                // Entities are gone - fall through to recreate
-                logger.fine("Display at " + position + " entities invalidated, recreating");
-            } catch (Exception e) {
-                // Can't verify - assume invalid and recreate
-                logger.fine("Display at " + position + " validation failed, recreating");
-            }
+            });
+            return;
         }
 
-        // Remove existing display if present
+        // Text changed or no existing display - remove old and create new
         removeDisplay(world, position);
 
         logger.fine("Creating display for sign at " + position + " with " + textLines.size() + " lines");
@@ -120,68 +147,88 @@ public class SignDisplayManager {
         world.execute(() -> {
             try {
                 Store<EntityStore> store = world.getEntityStore().getStore();
-                List<Ref<EntityStore>> entityRefs = new ArrayList<>();
-
-                // Create one entity per line, stacked from top to bottom
-                for (int i = 0; i < textLines.size(); i++) {
-                    String lineText = textLines.get(i);
-
-                    // Calculate Y position - first line at top, subsequent lines below
-                    double yOffset = BASE_Y_OFFSET - (i * LINE_HEIGHT);
-
-                    Vector3d displayPos = new Vector3d(
-                        position.getX() + 0.5,
-                        position.getY() + yOffset,
-                        position.getZ() + 0.5
-                    );
-
-                    // Spawn the entity
-                    SignDisplayEntity displayEntity = new SignDisplayEntity(world);
-                    SignDisplayEntity spawned = world.spawnEntity(displayEntity, displayPos, new Vector3f(0, 0, 0));
-
-                    if (spawned == null) {
-                        logger.warning("Failed to spawn display entity for line " + i);
-                        continue;
-                    }
-
-                    Ref<EntityStore> entityRef = spawned.getReference();
-                    if (entityRef == null) {
-                        logger.warning("Failed to get entity reference for line " + i);
-                        continue;
-                    }
-
-                    // Add nameplate with this line's text
-                    Nameplate nameplate = store.ensureAndGetComponent(entityRef, Nameplate.getComponentType());
-                    nameplate.setText(lineText);
-
-                    // Add Visible component
-                    store.ensureAndGetComponent(entityRef, EntityTrackerSystems.Visible.getComponentType());
-
-                    // Add tiny ModelComponent
-                    try {
-                        Model.ModelReference modelRef = new Model.ModelReference("hytale:player", 0.01f, null);
-                        Model model = modelRef.toModel();
-                        if (model != null) {
-                            store.addComponent(entityRef, ModelComponent.getComponentType(), new ModelComponent(model));
-                        }
-                    } catch (Exception modelEx) {
-                        // Ignore model errors
-                    }
-
-                    entityRefs.add(entityRef);
-                }
-
-                // Track all entities for this sign
-                if (!entityRefs.isEmpty()) {
-                    displayEntities.put(posKey, entityRefs);
-                    logger.fine("Created " + entityRefs.size() + " display entities at " + position);
-                }
-
+                recreateDisplayEntities(store, world, position, posKey, textLines);
             } catch (Exception e) {
                 logger.warning("Failed to create sign display: " + e.getMessage());
                 e.printStackTrace();
             }
         });
+    }
+
+    /**
+     * Internal method to create display entities. MUST be called from world thread.
+     */
+    private void recreateDisplayEntities(Store<EntityStore> store, World world, Vector3i position,
+                                         String posKey, List<String> textLines) {
+        // Remove any existing entities for this position
+        List<Ref<EntityStore>> oldRefs = displayEntities.remove(posKey);
+        if (oldRefs != null) {
+            for (Ref<EntityStore> ref : oldRefs) {
+                try {
+                    store.removeEntity(ref, RemoveReason.REMOVE);
+                } catch (Exception e) {
+                    // Entity may already be gone
+                }
+            }
+        }
+
+        // Store text tracking
+        displayText.put(posKey, new ArrayList<>(textLines));
+
+        List<Ref<EntityStore>> entityRefs = new ArrayList<>();
+
+        // Create one entity per line, stacked from top to bottom
+        for (int i = 0; i < textLines.size(); i++) {
+            String lineText = textLines.get(i);
+
+            // Calculate Y position - first line at top, subsequent lines below
+            double yOffset = BASE_Y_OFFSET - (i * LINE_HEIGHT);
+
+            Vector3d displayPos = new Vector3d(
+                position.getX() + 0.5,
+                position.getY() + yOffset,
+                position.getZ() + 0.5
+            );
+
+            // Spawn the entity
+            SignDisplayEntity displayEntity = new SignDisplayEntity(world);
+            SignDisplayEntity spawned = world.spawnEntity(displayEntity, displayPos, new Vector3f(0, 0, 0));
+
+            if (spawned == null) {
+                logger.warning("Failed to spawn display entity for line " + i);
+                continue;
+            }
+
+            Ref<EntityStore> entityRef = spawned.getReference();
+            if (entityRef == null) {
+                logger.warning("Failed to get entity reference for line " + i);
+                continue;
+            }
+
+            // Add nameplate with this line's text
+            Nameplate nameplate = store.ensureAndGetComponent(entityRef, Nameplate.getComponentType());
+            nameplate.setText(lineText);
+
+            // Add Visible component
+            store.ensureAndGetComponent(entityRef, EntityTrackerSystems.Visible.getComponentType());
+
+            // Add tiny ModelComponent using cached model
+            if (TINY_MODEL != null) {
+                try {
+                    store.addComponent(entityRef, ModelComponent.getComponentType(), new ModelComponent(TINY_MODEL));
+                } catch (Exception modelEx) {
+                    // Ignore model errors
+                }
+            }
+
+            entityRefs.add(entityRef);
+        }
+
+        // Track all entities for this sign
+        if (!entityRefs.isEmpty()) {
+            displayEntities.put(posKey, entityRefs);
+            logger.fine("Created " + entityRefs.size() + " display entities at " + position);
+        }
     }
 
     /**
@@ -331,5 +378,45 @@ public class SignDisplayManager {
         displayEntities.clear();
         displayText.clear();
         logger.fine("Invalidated all display tracking");
+    }
+
+    /**
+     * Mark a display as dirty (needs refresh).
+     * Called when entities may have been removed/invalidated.
+     */
+    public void markDisplayDirty(String posKey) {
+        dirtyDisplays.add(posKey);
+    }
+
+    /**
+     * Mark all displays in a world as dirty (e.g., after chunk unload).
+     */
+    public void markWorldDirty(String worldName) {
+        String prefix = worldName + ":";
+        for (String posKey : displayEntities.keySet()) {
+            if (posKey.startsWith(prefix)) {
+                dirtyDisplays.add(posKey);
+            }
+        }
+    }
+
+    /**
+     * Get all dirty displays and clear the dirty set.
+     * Returns a snapshot of dirty position keys.
+     */
+    public Set<String> getDirtyDisplaysAndClear() {
+        if (dirtyDisplays.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> result = new HashSet<>(dirtyDisplays);
+        dirtyDisplays.clear();
+        return result;
+    }
+
+    /**
+     * Check if there are any dirty displays pending refresh.
+     */
+    public boolean hasDirtyDisplays() {
+        return !dirtyDisplays.isEmpty();
     }
 }

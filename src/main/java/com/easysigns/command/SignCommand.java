@@ -172,20 +172,25 @@ public class SignCommand extends AbstractPlayerCommand {
         Player player = store.getComponent(playerRef, Player.getComponentType());
         boolean isAdmin = player != null && player.hasPermission("signs.admin");
 
-        // Find the nearest sign within radius
+        // Use spatial index for O(chunk count) instead of O(all signs in world)
+        java.util.List<Map.Entry<Vector3i, SignData>> nearbySigns = signStorage.getSignsNearPosition(
+            worldName, playerPos.getX(), playerPos.getY(), playerPos.getZ(), REMOVE_RADIUS);
+
+        // Find the nearest sign within the results
         Vector3i nearestSign = null;
         SignData nearestSignData = null;
         double nearestDistSq = Double.MAX_VALUE;
 
-        for (Vector3i signPos : signStorage.getSignsInWorld(worldName)) {
+        for (Map.Entry<Vector3i, SignData> entry : nearbySigns) {
+            Vector3i signPos = entry.getKey();
             double dx = playerPos.getX() - (signPos.getX() + 0.5);
             double dy = playerPos.getY() - (signPos.getY() + 0.5);
             double dz = playerPos.getZ() - (signPos.getZ() + 0.5);
             double distSq = dx * dx + dy * dy + dz * dz;
-            if (distSq < nearestDistSq && distSq <= REMOVE_RADIUS * REMOVE_RADIUS) {
+            if (distSq < nearestDistSq) {
                 nearestDistSq = distSq;
                 nearestSign = signPos;
-                nearestSignData = signStorage.getSign(worldName, signPos);
+                nearestSignData = entry.getValue();
             }
         }
 

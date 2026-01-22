@@ -126,13 +126,22 @@ public class SignPlaceSystem extends EntityEventSystem<EntityStore, PlaceBlockEv
 
     /**
      * Check if the item/block is a sign based on its ID or block key.
+     * Uses allocation-free case-insensitive check for performance.
      */
     private boolean isSignBlock(String itemId, String blockKey) {
-        if (itemId != null && itemId.toLowerCase().contains("sign")) {
-            return true;
-        }
-        if (blockKey != null && blockKey.toLowerCase().contains("sign")) {
-            return true;
+        return containsIgnoreCase(itemId, "sign") || containsIgnoreCase(blockKey, "sign");
+    }
+
+    /**
+     * Allocation-free case-insensitive contains check.
+     * Avoids creating new strings via toLowerCase() on every block place.
+     */
+    private static boolean containsIgnoreCase(String str, String search) {
+        if (str == null || str.length() < search.length()) return false;
+        for (int i = 0; i <= str.length() - search.length(); i++) {
+            if (str.regionMatches(true, i, search, 0, search.length())) {
+                return true;
+            }
         }
         return false;
     }

@@ -20,6 +20,7 @@ import java.util.logging.Logger;
 public class SignChatListener {
 
     private static final Color GREEN = new Color(85, 255, 85);
+    private static final Color RED = new Color(255, 85, 85);
     private static final Color YELLOW = new Color(255, 255, 85);
     private static final Color GOLD = new Color(255, 170, 0);
     private static final Color GRAY = new Color(170, 170, 170);
@@ -82,7 +83,7 @@ public class SignChatListener {
         if (!content.isEmpty()) {
             String bannedWord = plugin.getConfig().checkForBannedWords(content);
             if (bannedWord != null) {
-                sender.sendMessage(Message.raw(plugin.getConfig().getFilterMessage()).color(new Color(255, 85, 85)));
+                sender.sendMessage(Message.raw(plugin.getConfig().getFilterMessage()).color(RED));
                 logger.warning("Player " + sender.getUsername() + " tried to add banned word to sign: " + bannedWord);
                 return;
             }
