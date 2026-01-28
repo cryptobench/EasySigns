@@ -4,6 +4,7 @@ import com.easysigns.EasySigns;
 import com.hypixel.hytale.component.Ref;
 import com.hypixel.hytale.component.RemoveReason;
 import com.hypixel.hytale.component.Store;
+import com.hypixel.hytale.math.util.ChunkUtil;
 import com.hypixel.hytale.math.vector.Vector3d;
 import com.hypixel.hytale.math.vector.Vector3f;
 import com.hypixel.hytale.math.vector.Vector3i;
@@ -12,6 +13,7 @@ import com.hypixel.hytale.server.core.entity.nameplate.Nameplate;
 import com.hypixel.hytale.server.core.modules.entity.component.ModelComponent;
 import com.hypixel.hytale.server.core.modules.entity.tracker.EntityTrackerSystems;
 import com.hypixel.hytale.server.core.universe.world.World;
+import com.hypixel.hytale.server.core.universe.world.chunk.WorldChunk;
 import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
 
 import java.util.ArrayList;
@@ -77,9 +79,12 @@ public class SignDisplayManager {
      * Create display entities for a sign at the given position.
      * Creates one entity per line, stacked vertically.
      * If display already exists with same structure, skips recreation.
+     * Ensures the chunk is loaded before spawning entities.
      */
     public void createDisplay(World world, Vector3i position, String[] lines) {
         if (world == null || position == null || lines == null) {
+            logger.warning("createDisplay called with null argument: world=" + world
+                + " position=" + position + " lines=" + (lines != null ? lines.length : "null"));
             return;
         }
 
@@ -103,9 +108,8 @@ public class SignDisplayManager {
         // Check if we already have a display with the same text (thread-safe: just comparing strings)
         List<String> existingText = displayText.get(posKey);
         if (existingText != null && existingText.equals(textLines)) {
-            // Text matches - validation of entities must happen on world thread
-            // Schedule validation and potential recreation
-            world.execute(() -> {
+            // Text matches - validate entities exist, with chunk guarantee
+            ensureChunkAndRun(world, position, posKey, () -> {
                 try {
                     Store<EntityStore> store = world.getEntityStore().getStore();
                     List<Ref<EntityStore>> existingRefs = displayEntities.get(posKey);
@@ -122,15 +126,16 @@ public class SignDisplayManager {
                             logger.fine("Display at " + position + " still valid, skipping");
                             return;
                         }
-                        // Entities invalidated - mark for dirty refresh
-                        logger.fine("Display at " + position + " entities invalidated, recreating");
+                        logger.info("Display at " + position + " entities invalidated, recreating");
                     }
 
-                    // Entities are invalid - recreate them
+                    // Entities are invalid or missing - recreate them
                     recreateDisplayEntities(store, world, position, posKey, textLines);
 
                 } catch (Exception e) {
-                    logger.fine("Display at " + position + " validation failed: " + e.getMessage());
+                    logger.warning("Display validation failed at " + posKey + ": " + e.getMessage());
+                    e.printStackTrace();
+                    dirtyDisplays.add(posKey);
                 }
             });
             return;
@@ -144,13 +149,63 @@ public class SignDisplayManager {
         // Store the text we're creating
         displayText.put(posKey, new ArrayList<>(textLines));
 
-        world.execute(() -> {
+        ensureChunkAndRun(world, position, posKey, () -> {
             try {
                 Store<EntityStore> store = world.getEntityStore().getStore();
                 recreateDisplayEntities(store, world, position, posKey, textLines);
             } catch (Exception e) {
-                logger.warning("Failed to create sign display: " + e.getMessage());
+                logger.severe("Failed to create sign display at " + posKey + ": " + e.getMessage());
                 e.printStackTrace();
+                dirtyDisplays.add(posKey);
+            }
+        });
+    }
+
+    /**
+     * Ensures the chunk at the given block position is loaded, then runs the
+     * action on the world thread. If the chunk is not loaded, requests an async
+     * load and runs the action once the chunk is ready. On failure, the display
+     * is re-queued as dirty for later retry.
+     *
+     * @param world    the world containing the sign
+     * @param position the block position of the sign
+     * @param posKey   the position key for logging and dirty tracking
+     * @param action   the action to run on the world thread once chunk is ready
+     */
+    private void ensureChunkAndRun(World world, Vector3i position, String posKey, Runnable action) {
+        long chunkIdx = ChunkUtil.indexChunkFromBlock(position.getX(), position.getZ());
+
+        world.execute(() -> {
+            WorldChunk chunk = world.getChunkIfLoaded(chunkIdx);
+            if (chunk != null) {
+                // Chunk already loaded - run immediately
+                action.run();
+            } else {
+                // Chunk not loaded - request async load, then run
+                logger.info("Chunk not loaded for sign at " + posKey + ", requesting async load...");
+                world.getChunkAsync(chunkIdx).thenAccept(loadedChunk -> {
+                    if (loadedChunk != null) {
+                        world.execute(() -> {
+                            try {
+                                action.run();
+                            } catch (Exception e) {
+                                logger.severe("Failed to spawn sign display after async chunk load at "
+                                    + posKey + ": " + e.getMessage());
+                                e.printStackTrace();
+                                dirtyDisplays.add(posKey);
+                            }
+                        });
+                    } else {
+                        logger.warning("Async chunk load returned null for sign at " + posKey
+                            + ", re-queuing for retry");
+                        dirtyDisplays.add(posKey);
+                    }
+                }).exceptionally(ex -> {
+                    logger.severe("Exception during async chunk load for sign at " + posKey
+                        + ": " + ex.getMessage());
+                    dirtyDisplays.add(posKey);
+                    return null;
+                });
             }
         });
     }
@@ -167,7 +222,7 @@ public class SignDisplayManager {
                 try {
                     store.removeEntity(ref, RemoveReason.REMOVE);
                 } catch (Exception e) {
-                    // Entity may already be gone
+                    logger.fine("Old display entity already removed at " + posKey + ": " + e.getMessage());
                 }
             }
         }
@@ -176,6 +231,7 @@ public class SignDisplayManager {
         displayText.put(posKey, new ArrayList<>(textLines));
 
         List<Ref<EntityStore>> entityRefs = new ArrayList<>();
+        int failedLines = 0;
 
         // Create one entity per line, stacked from top to bottom
         for (int i = 0; i < textLines.size(); i++) {
@@ -190,53 +246,78 @@ public class SignDisplayManager {
                 position.getZ() + 0.5
             );
 
-            // Spawn the entity
-            SignDisplayEntity displayEntity = new SignDisplayEntity(world);
-            SignDisplayEntity spawned = world.spawnEntity(displayEntity, displayPos, new Vector3f(0, 0, 0));
+            try {
+                // Spawn the entity
+                SignDisplayEntity displayEntity = new SignDisplayEntity(world);
+                SignDisplayEntity spawned = world.spawnEntity(displayEntity, displayPos, new Vector3f(0, 0, 0));
 
-            if (spawned == null) {
-                logger.warning("Failed to spawn display entity for line " + i);
-                continue;
-            }
-
-            Ref<EntityStore> entityRef = spawned.getReference();
-            if (entityRef == null) {
-                logger.warning("Failed to get entity reference for line " + i);
-                continue;
-            }
-
-            // Add nameplate with this line's text
-            Nameplate nameplate = store.ensureAndGetComponent(entityRef, Nameplate.getComponentType());
-            nameplate.setText(lineText);
-
-            // Add Visible component
-            store.ensureAndGetComponent(entityRef, EntityTrackerSystems.Visible.getComponentType());
-
-            // Add tiny ModelComponent using cached model
-            if (TINY_MODEL != null) {
-                try {
-                    store.addComponent(entityRef, ModelComponent.getComponentType(), new ModelComponent(TINY_MODEL));
-                } catch (Exception modelEx) {
-                    // Ignore model errors
+                if (spawned == null) {
+                    logger.warning("spawnEntity returned null for sign line " + i + " at " + posKey
+                        + " (pos=" + displayPos + ")");
+                    failedLines++;
+                    continue;
                 }
-            }
 
-            entityRefs.add(entityRef);
+                Ref<EntityStore> entityRef = spawned.getReference();
+                if (entityRef == null) {
+                    logger.warning("Spawned entity has null reference for sign line " + i + " at " + posKey);
+                    failedLines++;
+                    continue;
+                }
+
+                // Add nameplate with this line's text
+                Nameplate nameplate = store.ensureAndGetComponent(entityRef, Nameplate.getComponentType());
+                nameplate.setText(lineText);
+
+                // Add Visible component
+                store.ensureAndGetComponent(entityRef, EntityTrackerSystems.Visible.getComponentType());
+
+                // Add tiny ModelComponent using cached model
+                if (TINY_MODEL != null) {
+                    try {
+                        store.addComponent(entityRef, ModelComponent.getComponentType(), new ModelComponent(TINY_MODEL));
+                    } catch (Exception modelEx) {
+                        logger.fine("ModelComponent add failed for sign at " + posKey + " line " + i
+                            + ": " + modelEx.getMessage());
+                    }
+                }
+
+                entityRefs.add(entityRef);
+            } catch (Exception e) {
+                logger.severe("Exception spawning display entity for sign line " + i + " at " + posKey
+                    + ": " + e.getMessage());
+                e.printStackTrace();
+                failedLines++;
+            }
         }
 
         // Track all entities for this sign
         if (!entityRefs.isEmpty()) {
             displayEntities.put(posKey, entityRefs);
-            logger.fine("Created " + entityRefs.size() + " display entities at " + position);
+            if (failedLines > 0) {
+                logger.warning("Created " + entityRefs.size() + "/" + textLines.size()
+                    + " display entities at " + posKey + " (" + failedLines + " lines failed)");
+                // Re-queue so the failed lines get retried
+                dirtyDisplays.add(posKey);
+            } else {
+                logger.fine("Created " + entityRefs.size() + " display entities at " + posKey);
+            }
+        } else {
+            logger.severe("Failed to create ANY display entities for sign at " + posKey
+                + " (" + textLines.size() + " lines attempted). Re-queuing for retry.");
+            dirtyDisplays.add(posKey);
         }
     }
 
     /**
      * Update the display for an existing sign.
      * Attempts in-place update if line count matches, otherwise recreates.
+     * Ensures chunk is loaded before modifying entities.
      */
     public void updateDisplay(World world, Vector3i position, String[] lines) {
         if (world == null || position == null || lines == null) {
+            logger.warning("updateDisplay called with null argument: world=" + world
+                + " position=" + position + " lines=" + (lines != null ? lines.length : "null"));
             return;
         }
 
@@ -267,25 +348,32 @@ public class SignDisplayManager {
             // Update text tracking
             displayText.put(posKey, new ArrayList<>(textLines));
 
-            world.execute(() -> {
+            ensureChunkAndRun(world, position, posKey, () -> {
                 try {
                     Store<EntityStore> store = world.getEntityStore().getStore();
 
                     for (int i = 0; i < textLines.size(); i++) {
                         Ref<EntityStore> entityRef = existingRefs.get(i);
-                        if (entityRef == null) continue;
+                        if (entityRef == null) {
+                            logger.warning("Null entity ref for sign line " + i + " at " + posKey
+                                + " during in-place update");
+                            continue;
+                        }
 
                         // Update nameplate text directly
                         Nameplate nameplate = store.getComponent(entityRef, Nameplate.getComponentType());
                         if (nameplate != null) {
                             nameplate.setText(textLines.get(i));
+                        } else {
+                            logger.warning("Nameplate component missing for sign line " + i + " at " + posKey
+                                + ", entity may have been destroyed");
                         }
                     }
 
-                    logger.fine("In-place updated " + textLines.size() + " display entities at " + position);
+                    logger.fine("In-place updated " + textLines.size() + " display entities at " + posKey);
                 } catch (Exception e) {
-                    logger.warning("Failed in-place update, falling back to recreate: " + e.getMessage());
-                    // Fall back to recreate
+                    logger.warning("Failed in-place update at " + posKey + ", falling back to recreate: "
+                        + e.getMessage());
                     createDisplay(world, position, lines);
                 }
             });
@@ -308,18 +396,23 @@ public class SignDisplayManager {
 
         List<Ref<EntityStore>> entityRefs = displayEntities.remove(posKey);
         displayText.remove(posKey); // Also clean up text tracking
+        dirtyDisplays.remove(posKey); // Clean up dirty tracking
 
         if (entityRefs != null && !entityRefs.isEmpty() && world != null) {
             world.execute(() -> {
-                try {
-                    Store<EntityStore> store = world.getEntityStore().getStore();
-                    for (Ref<EntityStore> entityRef : entityRefs) {
+                Store<EntityStore> store = world.getEntityStore().getStore();
+                int removed = 0;
+                for (Ref<EntityStore> entityRef : entityRefs) {
+                    try {
                         store.removeEntity(entityRef, RemoveReason.REMOVE);
+                        removed++;
+                    } catch (Exception e) {
+                        logger.fine("Could not remove display entity at " + posKey
+                            + " (already removed?): " + e.getMessage());
                     }
-                    logger.fine("Removed " + entityRefs.size() + " display entities at " + position);
-                } catch (Exception e) {
-                    logger.warning("Failed to remove sign display: " + e.getMessage());
                 }
+                logger.fine("Removed " + removed + "/" + entityRefs.size()
+                    + " display entities at " + posKey);
             });
         }
     }
