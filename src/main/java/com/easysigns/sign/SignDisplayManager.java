@@ -117,7 +117,16 @@ public class SignDisplayManager {
                     if (existingRefs != null && !existingRefs.isEmpty()) {
                         boolean allValid = true;
                         for (Ref<EntityStore> ref : existingRefs) {
-                            if (ref == null || store.getComponent(ref, Nameplate.getComponentType()) == null) {
+                            if (ref == null || !ref.isValid()) {
+                                allValid = false;
+                                break;
+                            }
+                            try {
+                                if (store.getComponent(ref, Nameplate.getComponentType()) == null) {
+                                    allValid = false;
+                                    break;
+                                }
+                            } catch (IllegalStateException e) {
                                 allValid = false;
                                 break;
                             }
@@ -162,10 +171,15 @@ public class SignDisplayManager {
     }
 
     /**
-     * Ensures the chunk at the given block position is loaded, then runs the
-     * action on the world thread. If the chunk is not loaded, requests an async
-     * load and runs the action once the chunk is ready. On failure, the display
-     * is re-queued as dirty for later retry.
+     * Runs the action on the world thread if the chunk at the given block
+     * position is loaded. If the chunk is not loaded, the display is marked
+     * dirty for later retry — the ChunkPreLoadProcessEvent handler will
+     * spawn it when a player approaches and the chunk loads naturally.
+     *
+     * Previously this method force-loaded chunks via getChunkAsync(), but that
+     * caused an infinite load-unload cycle for signs in player-less areas:
+     * chunk loads → entities spawn → chunk unloads (no players) → refs
+     * invalidated → dirty → repeat every 10 seconds with error spam.
      *
      * @param world    the world containing the sign
      * @param position the block position of the sign
@@ -178,34 +192,11 @@ public class SignDisplayManager {
         world.execute(() -> {
             WorldChunk chunk = world.getChunkIfLoaded(chunkIdx);
             if (chunk != null) {
-                // Chunk already loaded - run immediately
                 action.run();
             } else {
-                // Chunk not loaded - request async load, then run
-                logger.info("Chunk not loaded for sign at " + posKey + ", requesting async load...");
-                world.getChunkAsync(chunkIdx).thenAccept(loadedChunk -> {
-                    if (loadedChunk != null) {
-                        world.execute(() -> {
-                            try {
-                                action.run();
-                            } catch (Exception e) {
-                                logger.severe("Failed to spawn sign display after async chunk load at "
-                                    + posKey + ": " + e.getMessage());
-                                e.printStackTrace();
-                                dirtyDisplays.add(posKey);
-                            }
-                        });
-                    } else {
-                        logger.warning("Async chunk load returned null for sign at " + posKey
-                            + ", re-queuing for retry");
-                        dirtyDisplays.add(posKey);
-                    }
-                }).exceptionally(ex -> {
-                    logger.severe("Exception during async chunk load for sign at " + posKey
-                        + ": " + ex.getMessage());
-                    dirtyDisplays.add(posKey);
-                    return null;
-                });
+                // Chunk not loaded - no players nearby, defer to chunk load event
+                logger.fine("Chunk not loaded for sign at " + posKey + ", deferring to chunk load event");
+                dirtyDisplays.add(posKey);
             }
         });
     }
@@ -219,6 +210,7 @@ public class SignDisplayManager {
         List<Ref<EntityStore>> oldRefs = displayEntities.remove(posKey);
         if (oldRefs != null) {
             for (Ref<EntityStore> ref : oldRefs) {
+                if (ref == null || !ref.isValid()) continue;
                 try {
                     store.removeEntity(ref, RemoveReason.REMOVE);
                 } catch (Exception e) {
@@ -354,10 +346,11 @@ public class SignDisplayManager {
 
                     for (int i = 0; i < textLines.size(); i++) {
                         Ref<EntityStore> entityRef = existingRefs.get(i);
-                        if (entityRef == null) {
-                            logger.warning("Null entity ref for sign line " + i + " at " + posKey
-                                + " during in-place update");
-                            continue;
+                        if (entityRef == null || !entityRef.isValid()) {
+                            logger.warning("Invalid entity ref for sign line " + i + " at " + posKey
+                                + " during in-place update, falling back to recreate");
+                            createDisplay(world, position, lines);
+                            return;
                         }
 
                         // Update nameplate text directly
@@ -403,6 +396,7 @@ public class SignDisplayManager {
                 Store<EntityStore> store = world.getEntityStore().getStore();
                 int removed = 0;
                 for (Ref<EntityStore> entityRef : entityRefs) {
+                    if (entityRef == null || !entityRef.isValid()) continue;
                     try {
                         store.removeEntity(entityRef, RemoveReason.REMOVE);
                         removed++;
