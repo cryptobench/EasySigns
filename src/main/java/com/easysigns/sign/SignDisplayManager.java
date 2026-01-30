@@ -17,12 +17,18 @@ import com.hypixel.hytale.server.core.universe.world.chunk.WorldChunk;
 import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
+
+import com.hypixel.hytale.server.core.universe.Universe;
 
 /**
  * Manages the visual display of sign text in the world.
@@ -412,12 +418,83 @@ public class SignDisplayManager {
     }
 
     /**
-     * Clean up all display entities.
+     * Clean up all display entities from all worlds, waiting for completion.
+     * This MUST be called before plugin unload to prevent crashes when the
+     * entity type is unregistered while entities still exist.
      */
     public void cleanup() {
         logger.info("Cleaning up sign displays...");
+
+        if (displayEntities.isEmpty()) {
+            logger.info("No display entities to clean up");
+            displayText.clear();
+            dirtyDisplays.clear();
+            return;
+        }
+
+        // Group entity refs by world name for batch removal
+        Map<String, List<Ref<EntityStore>>> byWorld = new HashMap<>();
+        for (Map.Entry<String, List<Ref<EntityStore>>> entry : displayEntities.entrySet()) {
+            String posKey = entry.getKey();
+            int colonIdx = posKey.indexOf(':');
+            if (colonIdx < 0) continue;
+            String worldName = posKey.substring(0, colonIdx);
+            byWorld.computeIfAbsent(worldName, k -> new ArrayList<>()).addAll(entry.getValue());
+        }
+
+        int totalToRemove = displayEntities.values().stream().mapToInt(List::size).sum();
+        logger.info("Removing " + totalToRemove + " display entities across " + byWorld.size() + " world(s)");
+
+        CountDownLatch latch = new CountDownLatch(byWorld.size());
+        AtomicInteger removed = new AtomicInteger(0);
+
+        for (Map.Entry<String, List<Ref<EntityStore>>> entry : byWorld.entrySet()) {
+            String worldName = entry.getKey();
+            List<Ref<EntityStore>> refs = entry.getValue();
+
+            World world = Universe.get().getWorld(worldName);
+            if (world == null || !world.isAlive()) {
+                logger.warning("World '" + worldName + "' not available for cleanup, skipping "
+                    + refs.size() + " entities");
+                latch.countDown();
+                continue;
+            }
+
+            world.execute(() -> {
+                try {
+                    Store<EntityStore> store = world.getEntityStore().getStore();
+                    for (Ref<EntityStore> ref : refs) {
+                        if (ref != null && ref.isValid()) {
+                            try {
+                                store.removeEntity(ref, RemoveReason.REMOVE);
+                                removed.incrementAndGet();
+                            } catch (Exception e) {
+                                // Entity already removed or invalid - ignore
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    logger.warning("Error during entity cleanup in world " + worldName + ": " + e.getMessage());
+                } finally {
+                    latch.countDown();
+                }
+            });
+        }
+
+        try {
+            // Wait up to 5 seconds for all worlds to finish cleanup
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                logger.warning("Timeout waiting for display entity cleanup - some entities may not have been removed");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.warning("Interrupted while waiting for display entity cleanup");
+        }
+
+        logger.info("Removed " + removed.get() + "/" + totalToRemove + " display entities");
         displayEntities.clear();
         displayText.clear();
+        dirtyDisplays.clear();
     }
 
     /**
@@ -440,10 +517,17 @@ public class SignDisplayManager {
     }
 
     /**
-     * Get the number of active sign displays.
+     * Get the number of signs with active displays.
      */
     public int getDisplayCount() {
         return displayEntities.size();
+    }
+
+    /**
+     * Get the total number of display entities (lines) across all signs.
+     */
+    public int getTotalEntityCount() {
+        return displayEntities.values().stream().mapToInt(List::size).sum();
     }
 
     /**

@@ -257,10 +257,10 @@ public class EasySigns extends JavaPlugin {
                 }
             }
 
-            if (spawned > 0 || requeued > 0) {
-                logger.info("Display refresh: attempted=" + spawned + " requeued=" + requeued
-                    + " skipped=" + skipped);
-            }
+            // Always log with entity count to help diagnose leaks
+            logger.info("Display refresh: attempted=" + spawned + " requeued=" + requeued
+                + " skipped=" + skipped + " | tracked: " + displayManager.getDisplayCount()
+                + " signs, " + displayManager.getTotalEntityCount() + " entities");
         } catch (Exception e) {
             logger.severe("Display refresh failed with exception: " + e.getMessage());
             e.printStackTrace();
